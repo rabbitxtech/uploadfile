@@ -1,0 +1,326 @@
+// To switch DB: run `npm run db:switch postgresql|mysql|sqlite`
+// which rewrites the `provider` field below.
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  password   String
+  name       String?
+  role       String   @default("user") // "admin" | "user"
+  quotaBytes BigInt   @default(5368709120)
+  usedBytes  BigInt   @default(0)
+  banned     Boolean  @default(false)
+  emailVerified Boolean @default(false) // B9
+  approved   Boolean  @default(false) // self-registered users need admin approval to upload
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  files          File[]
+  folders        Folder[]
+  shares         Share[]
+  uploadSessions UploadSession[]
+  notifications  Notification[]
+  fileGrants     FileGrant[]
+  folderGrants   FolderGrant[]
+  comments       Comment[]
+  watchProgress  WatchProgress[]
+  collections    Collection[]
+  auditLogs      AuditLog[]
+  apiKeys        ApiKey[]
+  tokens         Token[]
+  sessions       Session[]
+}
+
+// Login sessions — one row per device/login. The JWT carries the session id
+// (`sid`); requireAuth rejects the token if its session is revoked or expired,
+// which makes "log out this device" and "log out everywhere" possible despite
+// JWTs being otherwise stateless. Changing the password revokes all sessions.
+model Session {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userAgent  String?
+  ip         String?
+  lastSeenAt DateTime  @default(now())
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// B6 — audit trail of security-relevant actions.
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  action     String // e.g. login, login_failed, file_delete, user_ban, share_create
+  targetType String?
+  targetId   String?
+  meta       String? // JSON
+  ip         String?
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([userId])
+}
+
+// B8 — personal access tokens for scripts / CI (sha256-hashed).
+model ApiKey {
+  id         String    @id @default(uuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name       String
+  prefix     String // shown in UI to identify the key
+  hash       String    @unique // sha256 of the full key
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// B9 — password reset / email verification tokens (sha256-hashed).
+model Token {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String // reset | verify
+  hash      String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, type])
+}
+
+// H5 — Collections: virtual groupings of files. "manual" holds an explicit set
+// of files (m2m); "smart" stores a saved search filter (JSON) evaluated live.
+model Collection {
+  id        String   @id @default(uuid())
+  name      String
+  ownerId   String
+  owner     User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  kind      String   @default("manual") // "manual" | "smart"
+  filter    String? // JSON for smart collections: { q?, tag? }
+  files     File[]   @relation("CollectionFiles")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([ownerId])
+}
+
+model Folder {
+  id        String    @id @default(uuid())
+  name      String
+  path      String    // full path: "/" "/docs" "/docs/2025"
+  parentId  String?
+  parent    Folder?   @relation("FolderTree", fields: [parentId], references: [id], onDelete: Cascade)
+  children  Folder[]  @relation("FolderTree")
+  ownerId   String
+  owner     User          @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  files     File[]
+  grants    FolderGrant[]
+  trashedAt DateTime?
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+
+  @@index([ownerId, parentId])
+  @@index([ownerId, trashedAt])
+}
+
+model File {
+  id           String    @id @default(uuid())
+  name         String
+  originalName String
+  mimeType     String
+  size         BigInt
+  objectKey    String    // MinIO key
+  bucket       String
+  checksum     String?
+  ocrText      String?   // K1 — extracted text (OCR) for search
+  embedding    String?   // K4 — JSON float[] semantic embedding of name+ocrText
+
+  folderId String?
+  folder   Folder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  ownerId  String
+  owner    User    @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+
+  thumbnailKey String?
+  hasPreview   Boolean @default(false)
+
+  currentVersion Int           @default(1)
+  versions       FileVersion[]
+
+  tags        Tag[]           @relation("FileTags")
+  shares      Share[]
+  grants      FileGrant[]
+  comments    Comment[]
+  progress    WatchProgress[]
+  collections Collection[]    @relation("CollectionFiles")
+
+  starred    Boolean   @default(false)
+  accessedAt DateTime?
+
+  trashedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([ownerId, folderId])
+  @@index([ownerId, trashedAt])
+  @@index([ownerId, starred])
+  @@index([ownerId, accessedAt])
+  @@index([name])
+}
+
+model FileVersion {
+  id        String   @id @default(uuid())
+  fileId    String
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  version   Int
+  objectKey String
+  size      BigInt
+  checksum  String?
+  createdAt DateTime @default(now())
+
+  @@unique([fileId, version])
+}
+
+model Tag {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  files     File[]   @relation("FileTags")
+  createdAt DateTime @default(now())
+}
+
+model Share {
+  id           String    @id @default(uuid())
+  token        String    @unique
+  fileId       String?
+  file         File?     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  folderId     String?
+  ownerId      String
+  owner        User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  password     String?
+  expiresAt    DateTime?
+  maxDownloads Int?
+  downloads    Int       @default(0)
+  allowUpload  Boolean   @default(false) // folder upload-request link (I1)
+  createdAt    DateTime  @default(now())
+  accesses     ShareAccess[]
+
+  @@index([token])
+}
+
+// B7 — per-access log for public share links (who opened/downloaded, IP, time).
+model ShareAccess {
+  id        String   @id @default(uuid())
+  shareId   String
+  share     Share    @relation(fields: [shareId], references: [id], onDelete: Cascade)
+  action    String // view | download | upload
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([shareId, createdAt])
+}
+
+model Notification {
+  id        String    @id @default(uuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type      String    // share_download | banned | unbanned | role_changed | quota_changed | welcome
+  title     String
+  body      String?
+  link      String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+}
+
+// Internal share: grant another registered user access to a file.
+model FileGrant {
+  id         String   @id @default(uuid())
+  fileId     String
+  file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  userId     String   // grantee
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission String   @default("view") // "view" | "edit"
+  createdAt  DateTime @default(now())
+
+  @@unique([fileId, userId])
+  @@index([userId])
+}
+
+// Internal share: grant a user access to a folder (inherited by descendants
+// via Folder.path prefix matching).
+model FolderGrant {
+  id         String   @id @default(uuid())
+  folderId   String
+  folder     Folder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
+  userId     String   // grantee
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  permission String   @default("view") // "view" | "edit"
+  createdAt  DateTime @default(now())
+
+  @@unique([folderId, userId])
+  @@index([userId])
+}
+
+model Comment {
+  id        String   @id @default(uuid())
+  fileId    String
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body      String
+  createdAt DateTime @default(now())
+
+  @@index([fileId, createdAt])
+}
+
+// Per-user playback position for a video, synced across devices.
+model WatchProgress {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileId    String
+  file      File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  position  Int // seconds
+  duration  Int? // seconds (for a % progress UI later)
+  updatedAt DateTime @updatedAt
+
+  @@unique([userId, fileId])
+  @@index([userId, updatedAt])
+}
+
+model UploadSession {
+  id             String   @id @default(uuid())
+  ownerId        String
+  owner          User     @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  filename       String
+  size           BigInt
+  mimeType       String
+  folderId       String?
+  uploadId       String   // MinIO multipart uploadId
+  objectKey      String
+  parts          String   @default("[]") // JSON: [{partNumber, etag, size}]
+  completed      Boolean  @default(false)
+  // When set, /complete will atomically replace the referenced file:
+  // delete its row + MinIO object, then create a new File with the same name.
+  replaceFileId  String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([ownerId])
+}

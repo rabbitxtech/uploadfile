@@ -1,0 +1,53 @@
+# Dependencies
+node_modules
+.pnp
+
+# Build output
+dist
+build
+dev-dist
+.next
+.turbo
+*.tsbuildinfo
+
+# Caches / coverage
+coverage
+.cache
+
+# Secrets / environment — keep only the *.example templates
+.env
+.env.*
+!.env.example
+!.env.prod.example
+mailserver.env
+!mailserver.env.example
+*.pem
+
+# Runtime data & secrets for the mail/storage stacks.
+# docker-data holds docker-mailserver state AND secrets: the OpenDKIM private
+# key (dms/config/opendkim/keys/**/mail.private) and hashed mail accounts
+# (postfix-accounts.cf). Never commit it.
+docker-data
+minio-data
+postgres-data
+
+# Local AI model cache (TRANSFORMERS_CACHE)
+models
+backend/models
+
+# Local dev SQLite database
+backend/prisma/migrations/dev.db*
+backend/prisma/*.db
+
+# Logs
+*.log
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+Thumbs.db
+*.local
+
+# Claude Code local overrides (keep .claude/CLAUDE.md + task files tracked)
+.claude/settings.local.json

@@ -1,0 +1,22 @@
+# Production reverse proxy with automatic HTTPS (Let's Encrypt) for the domain.
+# Requires: rabbitworld.ddns.net → your public IP, and ports 80 + 443 forwarded.
+{
+	# Email for the ACME (Let's Encrypt) account / expiry notices.
+	email admin@rabbitworld.ddns.net
+}
+
+rabbitworld.ddns.net {
+	# MinIO object storage (presigned media URLs live under the bucket path
+	# /uploads/...). Served over the same HTTPS host to avoid mixed content.
+	@minio path /uploads/*
+	reverse_proxy @minio minio:9000
+
+	# Everything else → the frontend nginx, which already proxies
+	# /api, /webdav and /ws (WebSocket) through to the backend.
+	reverse_proxy frontend:80
+
+	encode gzip zstd
+	request_body {
+		max_size 2GB
+	}
+}

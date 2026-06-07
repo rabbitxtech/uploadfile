@@ -1,0 +1,82 @@
+# Production overrides — serve the app at https://rabbitworld.ddns.net behind
+# Caddy (automatic HTTPS), with real-domain URLs and (optional) docker-mailserver.
+#
+# Web only:
+#   JWT_SECRET=... docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+# With real mail (docker-mailserver):
+#   ... -f docker-compose.prod.yml --profile mail up -d
+#
+# Prereqs: DNS rabbitworld.ddns.net → your public IP; router forwards 80 + 443
+# (and 25/587 if running mail). Set secrets in a .env file (see .env.prod.example).
+services:
+  caddy:
+    image: caddy:2-alpine
+    container_name: uploader-caddy
+    restart: unless-stopped
+    depends_on:
+      - frontend
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
+  # The dev mail catcher must not run in prod.
+  mailpit:
+    profiles: ['dev-only']
+
+  backend:
+    environment:
+      NODE_ENV: production
+      # Forge-proof: refuse to start prod without a strong secret.
+      JWT_SECRET: ${JWT_SECRET:?set a long random JWT_SECRET in your .env}
+      # Public, browser-reachable URLs (HTTPS via Caddy).
+      MINIO_PUBLIC_ENDPOINT: https://rabbitworld.ddns.net
+      CORS_ORIGIN: https://rabbitworld.ddns.net
+      PUBLIC_BASE_URL: https://rabbitworld.ddns.net
+      PUBLIC_APP_URL: https://rabbitworld.ddns.net
+      # Email — defaults to docker-mailserver; override SMTP_* in .env for a relay.
+      SMTP_HOST: ${SMTP_HOST:-mailserver}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASS: ${SMTP_PASS:-}
+      SMTP_ALLOW_SELFSIGNED: ${SMTP_ALLOW_SELFSIGNED:-false}
+      SMTP_FROM: ${SMTP_FROM:-Uploader <no-reply@rabbitworld.ddns.net>}
+
+  # Real outgoing mail (opt-in: add `--profile mail`). See docs/mail-setup.md.
+  mailserver:
+    image: mailserver/docker-mailserver:latest
+    container_name: uploader-mailserver
+    hostname: ${MAIL_HOSTNAME:-mail.rabbitworld.ddns.net}
+    restart: unless-stopped
+    profiles: ['mail']
+    env_file:
+      - ./mailserver.env
+    ports:
+      - '25:25'
+      - '587:587'
+      - '465:465'
+      - '993:993'
+    volumes:
+      # Mail data/state/queue MUST be named volumes — docker-mailserver's postfix
+      # queue needs real Linux filesystem semantics, which host bind mounts on
+      # Docker Desktop (Windows/Mac) don't provide ("queue file write error").
+      - dms-mail-data:/var/mail/
+      - dms-mail-state:/var/mail-state/
+      - dms-mail-logs:/var/log/mail/
+      # Config (accounts, DKIM keys, user-patches.sh) stays a bind mount so it's
+      # editable from the host and survives volume resets.
+      - ./docker-data/dms/config/:/tmp/docker-mailserver/
+    cap_add:
+      - NET_ADMIN
+
+volumes:
+  caddy-data:
+  caddy-config:
+  dms-mail-data:
+  dms-mail-state:
+  dms-mail-logs:
