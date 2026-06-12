@@ -1,6 +1,7 @@
 // Files CRUD, single-shot upload (multer), download, preview, versioning,
 // tags, search, move, and bulk-zip download.
 import dns from 'node:dns/promises';
+import fs from 'node:fs';
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import multer from 'multer';
@@ -11,6 +12,7 @@ import { env } from '../config/env.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, notFound, unauthorized, forbidden, HttpError } from '../utils/errors.js';
+import { makeThrottle } from '../utils/throttle.js';
 import {
   getObjectStream,
   getObjectRange,
@@ -28,9 +30,15 @@ import {
   generateVideoThumbnail,
 } from '../services/video.service.js';
 import { fileAccessLevel, canEdit } from '../services/access.service.js';
+import { postProcessMedia } from '../services/media.service.js';
+import { maybeGenerateHls, removeHls, hlsPrefix } from '../services/hls.service.js';
+import { maybeTranscribe } from '../services/transcribe.service.js';
 import { notify } from '../services/notify.service.js';
-import { sha256Buffer } from '../services/checksum.service.js';
+import { emitFileChange } from '../realtime/bus.js';
+import { sha256Buffer, backfillChecksum } from '../services/checksum.service.js';
 import { indexFile, embed, cosine } from '../services/ai.service.js';
+import { pgvectorEnabled, toVectorLiteral } from '../utils/vector.js';
+import { downloadYoutube, isAllowedSource, SUPPORTED_SOURCES, mimeForExt } from '../services/youtube.service.js';
 
 const router = Router();
 const STREAM_EXPIRY = '3h';
@@ -56,25 +64,33 @@ function readCookie(req, name) {
 // works without an Authorization header while staying unshareable and invisible
 // to JS/logs/history. Supports HTTP Range for seeking. This route is mounted
 // BEFORE requireAuth — it does its own token auth — so it must come first.
+// Validate the stream cookie for /:id/stream and /:id/stream/hls/* — both are
+// mounted before requireAuth and authenticate via the HttpOnly cookie instead
+// (browsers can't set Authorization on <video src> / hls.js segment requests).
+async function streamAuth(req) {
+  const token = readCookie(req, STREAM_COOKIE);
+  if (!token) throw unauthorized('Missing stream credential');
+  let payload;
+  try {
+    payload = jwt.verify(token, env.jwtSecret);
+  } catch {
+    throw unauthorized('Invalid or expired stream token');
+  }
+  if (payload.p !== 'stream' || payload.fid !== req.params.id) throw unauthorized('Invalid stream token');
+
+  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+  if (!user || user.banned) throw forbidden('No access');
+  const file = await prisma.file.findFirst({ where: { id: req.params.id, trashedAt: null } });
+  if (!file) throw notFound('File');
+  const level = await fileAccessLevel(user, file);
+  if (!level) throw notFound('File'); // access revoked since the token was issued
+  return file;
+}
+
 router.get(
   '/:id/stream',
   asyncHandler(async (req, res) => {
-    const token = readCookie(req, STREAM_COOKIE);
-    if (!token) throw unauthorized('Missing stream credential');
-    let payload;
-    try {
-      payload = jwt.verify(token, env.jwtSecret);
-    } catch {
-      throw unauthorized('Invalid or expired stream token');
-    }
-    if (payload.p !== 'stream' || payload.fid !== req.params.id) throw unauthorized('Invalid stream token');
-
-    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-    if (!user || user.banned) throw forbidden('No access');
-    const file = await prisma.file.findFirst({ where: { id: req.params.id, trashedAt: null } });
-    if (!file) throw notFound('File');
-    const level = await fileAccessLevel(user, file);
-    if (!level) throw notFound('File'); // access revoked since the token was issued
+    const file = await streamAuth(req);
 
     const size = Number(file.size);
     res.setHeader('Accept-Ranges', 'bytes');
@@ -107,6 +123,28 @@ router.get(
       stream.pipe(res);
     }
     bumpAccessed(file.id);
+  }),
+);
+
+// Task5 #9 — HLS playlists + segments (h/<fileId>/<name> in MinIO), protected
+// by the same stream cookie: its path (/api/files/<id>/stream) covers this
+// subpath, so hls.js requests carry it automatically. Flat layout — playlists
+// reference segments by bare filename, all served from this one directory.
+router.get(
+  '/:id/stream/hls/:name',
+  asyncHandler(async (req, res) => {
+    const file = await streamAuth(req);
+    const { name } = req.params;
+    if (!file.hlsReady || !/^[A-Za-z0-9_-]+\.(m3u8|ts)$/.test(name)) throw notFound('File');
+
+    res.setHeader(
+      'Content-Type',
+      name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t',
+    );
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    const stream = await getObjectStream(hlsPrefix(file.id) + name);
+    stream.on('error', () => res.destroy());
+    stream.pipe(res);
   }),
 );
 
@@ -176,8 +214,9 @@ router.post(
       makeVideoThumb(file.id, key, req.file.mimetype);
     }
 
-    if (canFaststart(req.file.mimetype)) optimizeFileVideo(file.id);
+    postProcessMedia(file.id, req.file.mimetype); // faststart → HLS + transcribe
     indexFile(file.id); // K1/K4 — OCR + embedding (async, best-effort)
+    emitFileChange(req.user.id, folderId); // Task5 #5 — live-refresh other tabs/devices
 
     res.status(201).json(file);
   }),
@@ -564,10 +603,109 @@ router.post(
     } else if (canVideoThumbnail(contentType)) {
       makeVideoThumb(file.id, key, contentType);
     }
-    if (canFaststart(contentType)) optimizeFileVideo(file.id);
+    postProcessMedia(file.id, contentType); // faststart → HLS + transcribe
     indexFile(file.id); // K1/K4
+    emitFileChange(req.user.id, folderId || null);
 
     res.status(201).json(file);
+  }),
+);
+
+// Import a video from YouTube via yt-dlp (best quality, no length cap). The CLI
+// downloads to a temp dir; we stream the result into MinIO, then clean up. The
+// response is a stream of newline-delimited JSON (NDJSON) progress events so the
+// browser can show a live progress bar — { type:'progress'|'status'|'done'|
+// 'error', ... }. nginx has a dedicated long-timeout, unbuffered location for it.
+router.post(
+  '/from-youtube',
+  requireApproved,
+  asyncHandler(async (req, res) => {
+    // Validation runs BEFORE we start streaming, so these throw normal JSON 4xx.
+    const { url, folderId } = z
+      .object({ url: z.string().url(), folderId: z.string().optional().nullable() })
+      .parse(req.body);
+    if (!isAllowedSource(url)) throw badRequest(`Unsupported source. Supported: ${SUPPORTED_SOURCES}`);
+    if (folderId) {
+      const f = await prisma.folder.findFirst({
+        where: { id: folderId, ownerId: req.user.id, trashedAt: null },
+      });
+      if (!f) throw notFound('Folder');
+    }
+
+    // Switch to NDJSON streaming. After this point we never throw past the
+    // handler (headers are already sent) — errors are emitted as events.
+    res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Accel-Buffering', 'no'); // tell nginx not to buffer this response
+    res.flushHeaders?.();
+    const send = (obj) => {
+      try {
+        res.write(JSON.stringify(obj) + '\n');
+      } catch {
+        /* client gone */
+      }
+    };
+    send({ type: 'status', status: 'starting' });
+
+    let dl;
+    try {
+      dl = await downloadYoutube(url, send);
+    } catch (e) {
+      send({ type: 'error', error: `YouTube download failed: ${e?.message || 'unknown error'}` });
+      return res.end();
+    }
+
+    // Track the uploaded object so we can clean it up if the DB row never gets
+    // created — otherwise a mid-flow failure leaves an orphan in MinIO that no
+    // File row (and no quota charge) ever accounts for.
+    let uploadedKey = null;
+    let committed = false;
+    try {
+      const total = dl.size;
+      try {
+        await assertQuota(req.user.id, total); // 413 if the video exceeds quota
+      } catch (e) {
+        send({ type: 'error', error: e?.message || 'Quota exceeded' });
+        return res.end();
+      }
+
+      send({ type: 'status', status: 'uploading' });
+      const mimeType = mimeForExt(dl.ext);
+      const key = objectKeyFor(req.user.id, dl.ext);
+      uploadedKey = key;
+      await putObjectStream(key, fs.createReadStream(dl.filePath), total, mimeType);
+
+      const file = await prisma.file.create({
+        data: {
+          name: dl.name,
+          originalName: dl.name,
+          mimeType,
+          size: BigInt(total),
+          objectKey: key,
+          bucket: process.env.MINIO_BUCKET || 'uploads',
+          folderId: folderId || null,
+          ownerId: req.user.id,
+          versions: { create: { version: 1, objectKey: key, size: BigInt(total) } },
+        },
+        include: { tags: true, versions: true },
+      });
+      committed = true;
+
+      await addUsage(req.user.id, total);
+      backfillChecksum(file.id, key); // dedup checksum (async, streams from MinIO)
+      if (canVideoThumbnail(mimeType)) makeVideoThumb(file.id, key, mimeType);
+      postProcessMedia(file.id, mimeType); // faststart → HLS + transcribe
+      indexFile(file.id); // K1/K4
+      emitFileChange(req.user.id, folderId || null);
+
+      send({ type: 'done', file });
+    } catch (e) {
+      if (uploadedKey && !committed) removeObject(uploadedKey).catch(() => {}); // drop the orphan
+      send({ type: 'error', error: e?.message || 'Import failed' });
+    } finally {
+      dl.cleanup();
+      res.end();
+    }
   }),
 );
 
@@ -598,6 +736,9 @@ router.post(
     if (!file.thumbnailKey && canVideoThumbnail(file.mimeType)) {
       makeVideoThumb(file.id, file.objectKey, file.mimeType);
     }
+    // Backfill HLS renditions / transcript for videos uploaded before Task5.
+    maybeGenerateHls(file.id);
+    maybeTranscribe(file.id);
     const updated = await prisma.file.findUnique({ where: { id: file.id } });
     res.json({ id: updated.id, size: updated.size.toString() });
   }),
@@ -633,8 +774,10 @@ router.get(
   }),
 );
 
-// K4 — semantic search: embed the query and rank files by cosine similarity
-// against their stored embeddings.
+// K4 — semantic search: embed the query and rank files by cosine similarity.
+// Task5 #12 — on PostgreSQL the ranking runs in the database against the
+// pgvector `embeddingVec` column (HNSW index: `ORDER BY <=> LIMIT 30` is an
+// ANN index scan, no full load into Node). mysql/sqlite keep the JS fallback.
 router.get(
   '/semantic-search',
   asyncHandler(async (req, res) => {
@@ -642,6 +785,34 @@ router.get(
     if (!q) return res.json({ files: [] });
     const qvec = await embed(q).catch(() => null);
     if (!qvec) return res.json({ files: [], error: 'Embedding unavailable' });
+
+    const lit = pgvectorEnabled() ? toVectorLiteral(qvec) : null;
+    if (lit) {
+      // Pure ORDER BY … LIMIT keeps the HNSW index scan; the score floor is
+      // applied afterwards in JS so it can't break the index usage.
+      const hits = (
+        await prisma.$queryRaw`
+          SELECT "id", 1 - ("embeddingVec" <=> ${lit}::vector) AS score
+          FROM "File"
+          WHERE "ownerId" = ${req.user.id} AND "trashedAt" IS NULL AND "embeddingVec" IS NOT NULL
+          ORDER BY "embeddingVec" <=> ${lit}::vector
+          LIMIT 30`
+      ).filter((h) => Number(h.score) > 0.2);
+      if (!hits.length) return res.json({ files: [] });
+      const rows = await prisma.file.findMany({
+        where: { id: { in: hits.map((h) => h.id) } },
+        include: { tags: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
+      });
+      const byId = new Map(rows.map((f) => [f.id, f]));
+      return res.json({
+        files: hits.flatMap((h) => {
+          const f = byId.get(h.id);
+          if (!f) return [];
+          const { embedding, ocrText, ...rest } = f;
+          return [{ ...rest, score: Number(Number(h.score).toFixed(3)) }];
+        }),
+      });
+    }
 
     const files = await prisma.file.findMany({
       where: { ownerId: req.user.id, trashedAt: null, embedding: { not: null } },
@@ -711,7 +882,14 @@ router.get(
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(file.name)}"`);
     const stream = await getObjectStream(v.objectKey);
     stream.on('error', (e) => res.destroy(e));
-    stream.pipe(res);
+    // Task 15 — optional per-connection bandwidth cap (0 = unlimited).
+    const throttle = makeThrottle(env.limits.downloadKbps);
+    if (throttle) {
+      throttle.on('error', (e) => res.destroy(e));
+      stream.pipe(throttle).pipe(res);
+    } else {
+      stream.pipe(res);
+    }
     bumpAccessed(file.id);
   }),
 );
@@ -899,6 +1077,8 @@ router.patch(
       },
       include: { tags: true },
     });
+    emitFileChange(file.ownerId, file.folderId);
+    if (updated.folderId !== file.folderId) emitFileChange(file.ownerId, updated.folderId);
     res.json(updated);
   }),
 );
@@ -936,10 +1116,14 @@ router.post(
         size: BigInt(req.file.size),
         mimeType: req.file.mimetype,
         currentVersion: nextVersion,
+        // New content invalidates the old renditions (they'd play stale video).
+        hlsReady: false,
       },
       include: { versions: { orderBy: { version: 'desc' } } },
     });
     await addUsage(file.ownerId, req.file.size);
+    if (file.hlsReady) removeHls(file.id).catch(() => {});
+    postProcessMedia(file.id, req.file.mimetype);
     res.status(201).json(updated);
   }),
 );
@@ -952,6 +1136,7 @@ router.delete(
     if (!file) throw notFound('File');
     if (file.trashedAt) return res.json({ ok: true });
     await prisma.file.update({ where: { id: file.id }, data: { trashedAt: new Date() } });
+    emitFileChange(file.ownerId, file.folderId);
     res.json({ ok: true });
   }),
 );
@@ -967,6 +1152,7 @@ router.post(
       where: { id: { in: ids }, ...ownerScope(req), trashedAt: null },
       data: { trashedAt: new Date() },
     });
+    if (r.count) emitFileChange(req.user.id);
     res.json({ count: r.count });
   }),
 );
@@ -992,6 +1178,7 @@ router.post(
       });
       count += res2.count;
     }
+    if (count) emitFileChange(req.user.id);
     res.json({ count });
   }),
 );
@@ -1013,6 +1200,7 @@ router.post(
       where: { id: { in: ids }, ...ownerScope(req) },
       data: { folderId },
     });
+    if (r.count) emitFileChange(req.user.id, folderId);
     res.json({ count: r.count });
   }),
 );
@@ -1020,6 +1208,7 @@ router.post(
 router.post(
   '/bulk/zip',
   asyncHandler(async (req, res) => {
+    if (!env.zipDownloadEnabled) throw forbidden('ZIP download is temporarily disabled');
     const { ids } = bulkSchema.parse(req.body);
     const files = await prisma.file.findMany({
       where: { id: { in: ids }, ...ownerScope(req), trashedAt: null },

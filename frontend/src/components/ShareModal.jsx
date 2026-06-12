@@ -7,25 +7,31 @@ import {
   File as FileIcon,
   Link as LinkIcon,
   UserPlus,
+  Users2,
   Trash2,
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
 import clsx from 'clsx';
-import { ShareApi, GrantApi } from '../api/endpoints.js';
+import QRCode from 'qrcode';
+import { ShareApi, GrantApi, GroupApi } from '../api/endpoints.js';
 import { copyText } from '../lib/uid.js';
 
 export default function ShareModal({ target, onClose }) {
   const [tab, setTab] = useState('user'); // 'user' | 'link'
+  const [label, setLabel] = useState('');
   const [password, setPassword] = useState('');
   const [expiresAt, setExpiresAt] = useState('');
   const [maxDownloads, setMaxDownloads] = useState('');
   const [allowUpload, setAllowUpload] = useState(false);
   const [share, setShare] = useState(null);
   const [copied, setCopied] = useState(false);
+  const [qr, setQr] = useState(null); // data-URL of the link QR (Task5 #15)
 
   // internal user-share state
+  const [granteeType, setGranteeType] = useState('user'); // 'user' | 'group'
   const [identifier, setIdentifier] = useState('');
+  const [groupId, setGroupId] = useState('');
   const [permission, setPermission] = useState('view');
   const qc = useQueryClient();
 
@@ -33,10 +39,14 @@ export default function ShareModal({ target, onClose }) {
     // reset when target changes
     setShare(null);
     setIdentifier('');
+    setGroupId('');
+    setGranteeType('user');
+    setLabel('');
     setPassword('');
     setExpiresAt('');
     setMaxDownloads('');
     setAllowUpload(false);
+    setQr(null);
   }, [target]);
 
   const isFolder = !!target?.folderId;
@@ -51,6 +61,20 @@ export default function ShareModal({ target, onClose }) {
     queryFn: () => GrantApi.list(resourceParams),
     enabled: !!target && tab === 'user',
   });
+  const groupsQuery = useQuery({
+    queryKey: ['groups'],
+    queryFn: () => GroupApi.list(),
+    enabled: !!target && tab === 'user',
+  });
+  const groups = groupsQuery.data?.groups || [];
+
+  // Render the QR for the created link (scan-to-open for someone next to you).
+  useEffect(() => {
+    if (!share) return;
+    QRCode.toDataURL(`${window.location.origin}/s/${share.token}`, { width: 220, margin: 1 })
+      .then(setQr)
+      .catch(() => setQr(null));
+  }, [share]);
 
   if (!target) return null;
 
@@ -60,12 +84,14 @@ export default function ShareModal({ target, onClose }) {
     e.preventDefault();
     try {
       const payload = { ...resourceParams };
+      if (label.trim()) payload.label = label.trim();
       if (password) payload.password = password;
       if (expiresAt) payload.expiresAt = new Date(expiresAt).toISOString();
       if (maxDownloads) payload.maxDownloads = parseInt(maxDownloads, 10);
       if (isFolder && allowUpload) payload.allowUpload = true;
       const s = await ShareApi.create(payload);
       setShare(s);
+      qc.invalidateQueries({ queryKey: ['shares'] });
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to create share');
     }
@@ -73,11 +99,17 @@ export default function ShareModal({ target, onClose }) {
 
   const submitGrant = async (e) => {
     e.preventDefault();
-    if (!identifier.trim()) return;
     try {
-      await GrantApi.create({ ...resourceParams, identifier: identifier.trim(), permission });
-      toast.success(`Shared with ${identifier.trim()}`);
-      setIdentifier('');
+      if (granteeType === 'group') {
+        if (!groupId) return;
+        await GrantApi.create({ ...resourceParams, groupId, permission });
+        toast.success(`Shared with group ${groups.find((g) => g.id === groupId)?.name || ''}`);
+      } else {
+        if (!identifier.trim()) return;
+        await GrantApi.create({ ...resourceParams, identifier: identifier.trim(), permission });
+        toast.success(`Shared with ${identifier.trim()}`);
+        setIdentifier('');
+      }
       qc.invalidateQueries({ queryKey: ['grants', target.fileId || target.folderId] });
     } catch (err) {
       toast.error(err.response?.data?.error || 'Failed to share');
@@ -152,16 +184,52 @@ export default function ShareModal({ target, onClose }) {
         {tab === 'user' ? (
           <div className="space-y-3">
             <form onSubmit={submitGrant} className="space-y-2">
-              <label className="block text-xs text-slate-500 dark:text-slate-400">
-                Username or email
-              </label>
+              <div className="flex items-center justify-between">
+                <label className="block text-xs text-slate-500 dark:text-slate-400">
+                  {granteeType === 'group' ? 'Group' : 'Username or email'}
+                </label>
+                {groups.length > 0 && (
+                  <div className="flex gap-1 text-[11px]">
+                    {['user', 'group'].map((t) => (
+                      <button
+                        key={t}
+                        type="button"
+                        onClick={() => setGranteeType(t)}
+                        className={clsx(
+                          'rounded px-1.5 py-0.5 capitalize',
+                          granteeType === t
+                            ? 'bg-brand-600 text-white'
+                            : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800',
+                        )}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <div className="flex gap-2">
-                <input
-                  className="input"
-                  placeholder="e.g. alice"
-                  value={identifier}
-                  onChange={(e) => setIdentifier(e.target.value)}
-                />
+                {granteeType === 'group' ? (
+                  <select
+                    className="select flex-1"
+                    value={groupId}
+                    onChange={(e) => setGroupId(e.target.value)}
+                  >
+                    <option value="">Select a group…</option>
+                    {groups.map((g) => (
+                      <option key={g.id} value={g.id}>
+                        {g.name} ({g.memberCount})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    className="input"
+                    placeholder="e.g. alice"
+                    value={identifier}
+                    onChange={(e) => setIdentifier(e.target.value)}
+                  />
+                )}
                 <select
                   className="select-sm w-24 shrink-0"
                   value={permission}
@@ -172,7 +240,7 @@ export default function ShareModal({ target, onClose }) {
                 </select>
               </div>
               <button type="submit" className="btn-primary w-full justify-center">
-                <UserPlus className="h-4 w-4" /> Share
+                {granteeType === 'group' ? <Users2 className="h-4 w-4" /> : <UserPlus className="h-4 w-4" />} Share
               </button>
             </form>
 
@@ -187,12 +255,18 @@ export default function ShareModal({ target, onClose }) {
                     className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-slate-50 dark:hover:bg-slate-800/40"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-slate-800 dark:text-slate-200">
-                        {g.user.name || g.user.email}
+                      <div className="flex items-center gap-1.5 truncate text-sm text-slate-800 dark:text-slate-200">
+                        {g.group && <Users2 className="h-3.5 w-3.5 shrink-0 text-brand-500" />}
+                        {g.group ? g.group.name : g.user?.name || g.user?.email}
                       </div>
-                      {g.user.name && (
+                      {g.user?.name && (
                         <div className="truncate text-xs text-slate-400 dark:text-slate-500">
                           {g.user.email}
+                        </div>
+                      )}
+                      {g.group && (
+                        <div className="truncate text-xs text-slate-400 dark:text-slate-500">
+                          group
                         </div>
                       )}
                     </div>
@@ -218,6 +292,18 @@ export default function ShareModal({ target, onClose }) {
           </div>
         ) : !share ? (
           <form onSubmit={submitLink} className="space-y-3">
+            <div>
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
+                Label (optional — only you see it)
+              </label>
+              <input
+                className="input"
+                value={label}
+                maxLength={120}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder="e.g. for the design team"
+              />
+            </div>
             <div>
               <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Password (optional)
@@ -297,7 +383,19 @@ export default function ShareModal({ target, onClose }) {
                 )}
               </button>
             </div>
+            {qr && (
+              <div className="mt-3 flex justify-center">
+                <img
+                  src={qr}
+                  alt="QR code for the share link"
+                  className="rounded-md border border-slate-200 bg-white p-1 dark:border-slate-700"
+                  width={160}
+                  height={160}
+                />
+              </div>
+            )}
             <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">
+              {share.label ? `"${share.label}". ` : ''}
               {share.password ? 'Password protected. ' : ''}
               {share.expiresAt ? `Expires ${new Date(share.expiresAt).toLocaleString()}. ` : ''}
               {share.maxDownloads ? `Max ${share.maxDownloads} downloads.` : ''}

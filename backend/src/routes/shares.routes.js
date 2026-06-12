@@ -6,6 +6,7 @@ import archiver from 'archiver';
 import { nanoid } from 'nanoid';
 import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
+import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
@@ -16,7 +17,8 @@ import { indexFile } from '../services/ai.service.js';
 import { canThumbnail, generateThumbnail } from '../services/thumbnail.service.js';
 import { canVideoThumbnail, generateVideoThumbnail } from '../services/video.service.js';
 import { notify } from '../services/notify.service.js';
-import { publicLimiter } from '../middleware/ratelimit.js';
+import { emitFileChange } from '../realtime/bus.js';
+import { publicLimiter, uploadLimiter } from '../middleware/ratelimit.js';
 import { audit, clientIp } from '../services/audit.service.js';
 
 const router = Router();
@@ -184,6 +186,7 @@ router.post(
     }
 
     if (share.folderId) {
+      if (!env.zipDownloadEnabled) throw forbidden('ZIP download is temporarily disabled');
       const folder = await prisma.folder.findUnique({
         where: { id: share.folderId },
         select: { name: true },
@@ -221,6 +224,7 @@ router.post(
 // uploaded file is owned by (and counts against the quota of) the link owner.
 router.post(
   '/public/:token/upload',
+  uploadLimiter, // Task 15 — strict per-IP rate limit on anonymous uploads
   upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw badRequest('No file uploaded');
@@ -232,6 +236,18 @@ router.post(
       const ok = req.body?.password && (await bcrypt.compare(req.body.password, share.password));
       if (!ok) throw forbidden('Password required');
     }
+
+    // Task 15 — anti-abuse caps on the drop-box.
+    const maxBytes = env.limits.dropboxMaxFileBytes;
+    if (maxBytes > 0 && req.file.size > maxBytes) {
+      throw badRequest(`File too large for this upload link (max ${Math.floor(maxBytes / (1024 * 1024))} MB)`);
+    }
+    const maxUploads = env.limits.dropboxMaxUploadsPerShare;
+    if (maxUploads > 0) {
+      const used = await prisma.shareAccess.count({ where: { shareId: share.id, action: 'upload' } });
+      if (used >= maxUploads) throw forbidden('This upload link has reached its file limit');
+    }
+
     const folder = await prisma.folder.findFirst({
       where: { id: share.folderId, trashedAt: null },
     });
@@ -279,6 +295,7 @@ router.post(
       body: `"${req.file.originalname}" was uploaded via your upload link.`,
       link: '/files',
     });
+    emitFileChange(share.ownerId, folder.id); // Task5 #5
 
     res.status(201).json({ ok: true, name: file.name });
   }),
@@ -319,6 +336,7 @@ router.post(
       .object({
         fileId: z.string().optional(),
         folderId: z.string().optional(),
+        label: z.string().trim().max(120).optional(),
         password: z.string().min(1).optional(),
         expiresAt: z.string().datetime().optional(),
         maxDownloads: z.number().int().positive().optional(),
@@ -326,6 +344,13 @@ router.post(
       })
       .refine((d) => !!d.fileId || !!d.folderId, { message: 'fileId or folderId required' })
       .parse(req.body);
+
+    // Task 15 — cap active share links per user (admins exempt; 0 = unlimited).
+    const cap = env.limits.maxSharesPerUser;
+    if (cap > 0 && req.user.role !== 'admin') {
+      const active = await prisma.share.count({ where: { ownerId: req.user.id } });
+      if (active >= cap) throw forbidden(`Share limit reached (max ${cap}). Revoke an old share first.`);
+    }
 
     if (data.fileId) {
       const f = await prisma.file.findFirst({
@@ -346,6 +371,7 @@ router.post(
         fileId: data.fileId ?? null,
         folderId: data.folderId ?? null,
         ownerId: req.user.id,
+        label: data.label || null,
         password: data.password ? await bcrypt.hash(data.password, 10) : null,
         expiresAt: data.expiresAt ? new Date(data.expiresAt) : null,
         maxDownloads: data.maxDownloads ?? null,
@@ -360,6 +386,37 @@ router.post(
       ip: clientIp(req),
     });
     res.status(201).json(share);
+  }),
+);
+
+// Task5 #15 — update a share's label or expiry ("extend" an expiring link).
+// expiresAt: ISO datetime to set, or null to remove the expiry.
+router.patch(
+  '/:id',
+  asyncHandler(async (req, res) => {
+    const data = z
+      .object({
+        label: z.string().trim().max(120).nullable().optional(),
+        expiresAt: z.string().datetime().nullable().optional(),
+      })
+      .parse(req.body);
+    const s = await prisma.share.findFirst({ where: { id: req.params.id, ownerId: req.user.id } });
+    if (!s) throw notFound('Share');
+    const updated = await prisma.share.update({
+      where: { id: s.id },
+      data: {
+        label: data.label !== undefined ? data.label || null : undefined,
+        expiresAt: data.expiresAt !== undefined ? (data.expiresAt ? new Date(data.expiresAt) : null) : undefined,
+      },
+    });
+    audit('share_update', {
+      userId: req.user.id,
+      targetType: 'share',
+      targetId: s.id,
+      meta: { label: updated.label, expiresAt: updated.expiresAt },
+      ip: clientIp(req),
+    });
+    res.json(updated);
   }),
 );
 

@@ -8,6 +8,7 @@ import { pipeline as streamPipeline } from 'node:stream/promises';
 import { getObjectStream } from './storage.service.js';
 import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
+import { pgvectorEnabled, toVectorLiteral } from '../utils/vector.js';
 
 const EMBED_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const OCR_LANGS = 'eng+vie';
@@ -92,6 +93,20 @@ export function cosine(a, b) {
   return dot; // vectors are already L2-normalized
 }
 
+// Task5 #12 — mirror a freshly computed embedding into the pgvector column
+// (PostgreSQL only; the JSON `embedding` string stays the portable source of
+// truth). Best-effort like the rest of the indexing pipeline: never throws.
+export async function syncVectorColumn(fileId, vector) {
+  if (!pgvectorEnabled()) return;
+  const lit = toVectorLiteral(vector);
+  if (!lit) return;
+  try {
+    await prisma.$executeRaw`UPDATE "File" SET "embeddingVec" = ${lit}::vector WHERE "id" = ${fileId}`;
+  } catch (e) {
+    logger.warn({ err: e?.message, fileId }, '[ai] pgvector sync failed');
+  }
+}
+
 // Index one file: OCR (if applicable) + embedding of name + ocrText. Best-effort.
 export async function indexFile(fileId) {
   try {
@@ -117,6 +132,7 @@ export async function indexFile(fileId) {
         ...(vector ? { embedding: JSON.stringify(vector) } : {}),
       },
     });
+    if (vector) await syncVectorColumn(file.id, vector);
   } catch (e) {
     logger.warn({ err: e?.message }, '[ai] indexFile failed');
   }

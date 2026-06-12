@@ -28,6 +28,28 @@ export default {
           '0%': { transform: 'translateX(-100%)' },
           '100%': { transform: 'translateX(0)' },
         },
+        // Subtle "rise + fade" for list items / cards entering the viewport.
+        fadeInUp: {
+          '0%': { opacity: 0, transform: 'translateY(6px)' },
+          '100%': { opacity: 1, transform: 'translateY(0)' },
+        },
+        // Skeleton loading sweep.
+        shimmer: {
+          '0%': { backgroundPosition: '-200% 0' },
+          '100%': { backgroundPosition: '200% 0' },
+        },
+      },
+      // Named utilities so components can use `animate-fade-in` etc. (the
+      // existing arbitrary `animate-[fadeIn_…]` call sites keep working too).
+      animation: {
+        'fade-in': 'fadeIn 150ms ease-out',
+        'pop-in': 'popIn 160ms cubic-bezier(0.16, 1, 0.3, 1)',
+        'fade-in-up': 'fadeInUp 220ms cubic-bezier(0.16, 1, 0.3, 1) both',
+        shimmer: 'shimmer 1.6s ease-in-out infinite',
+      },
+      transitionTimingFunction: {
+        // A gentle ease-out-back-ish curve for snappy-but-soft motion.
+        smooth: 'cubic-bezier(0.16, 1, 0.3, 1)',
       },
     },
   },

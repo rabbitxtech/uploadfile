@@ -5,6 +5,13 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
 import { folderAccessLevel } from '../services/access.service.js';
+import {
+  parseListQuery,
+  fileOrderBy,
+  folderOrderBy,
+  filePageArgs,
+  pageResult,
+} from '../utils/listquery.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -24,11 +31,17 @@ function effectiveOwnerId(req) {
 }
 
 // List folders/files inside a folder (or root). `?parentId=` empty means root.
+// Task5 #20 — files are cursor-paginated (`?cursor=&take=&sort=&dir=`):
+// the response carries `nextCursor` (null when done) and, on the first page
+// only, `total` (file count) plus the folder list (folders are assumed few;
+// only files explode into the thousands). Cursor pages return files only.
 router.get(
   '/',
   asyncHandler(async (req, res) => {
     const parentId = req.query.parentId || null;
     const normalizedParent = parentId === '' || parentId === null ? null : String(parentId);
+    const page = parseListQuery(req.query);
+    const firstPage = !page.cursor;
 
     // Navigating into a specific folder: if the user doesn't own it (and isn't
     // an admin override), allow it when they have a folder grant on it or an
@@ -42,35 +55,47 @@ router.get(
         const level = await folderAccessLevel(req.user, folder);
         if (!level) throw forbidden();
         // Granted: list this folder's contents by its real owner.
-        const [folders, files] = await Promise.all([
-          prisma.folder.findMany({
-            where: { ownerId: folder.ownerId, parentId: folder.id, trashedAt: null },
-            orderBy: { name: 'asc' },
-          }),
+        const fileWhere = { ownerId: folder.ownerId, folderId: folder.id, trashedAt: null };
+        const [folders, rows, total] = await Promise.all([
+          firstPage
+            ? prisma.folder.findMany({
+                where: { ownerId: folder.ownerId, parentId: folder.id, trashedAt: null },
+                orderBy: folderOrderBy(page.sort, page.dir),
+              })
+            : Promise.resolve([]),
           prisma.file.findMany({
-            where: { ownerId: folder.ownerId, folderId: folder.id, trashedAt: null },
-            orderBy: { name: 'asc' },
+            where: fileWhere,
+            orderBy: fileOrderBy(page.sort, page.dir),
             include: { tags: true, owner: { select: { id: true, name: true, email: true } } },
+            ...filePageArgs(page),
           }),
+          firstPage ? prisma.file.count({ where: fileWhere }) : Promise.resolve(null),
         ]);
-        return res.json({ current: folder, folders, files, shared: true });
+        const { files, nextCursor } = pageResult(rows, page.take);
+        return res.json({ current: folder, folders, files, nextCursor, total, shared: true });
       }
     }
 
     const ownerId = effectiveOwnerId(req);
     const where = { ownerId, trashedAt: null, parentId: normalizedParent };
-    const [folders, files, current] = await Promise.all([
-      prisma.folder.findMany({ where, orderBy: { name: 'asc' } }),
+    const fileWhere = { ownerId, trashedAt: null, folderId: where.parentId };
+    const [folders, rows, total, current] = await Promise.all([
+      firstPage
+        ? prisma.folder.findMany({ where, orderBy: folderOrderBy(page.sort, page.dir) })
+        : Promise.resolve([]),
       prisma.file.findMany({
-        where: { ownerId, trashedAt: null, folderId: where.parentId },
-        orderBy: { name: 'asc' },
+        where: fileWhere,
+        orderBy: fileOrderBy(page.sort, page.dir),
         include: { tags: true, owner: { select: { id: true, name: true, email: true } } },
+        ...filePageArgs(page),
       }),
-      where.parentId
+      firstPage ? prisma.file.count({ where: fileWhere }) : Promise.resolve(null),
+      where.parentId && firstPage
         ? prisma.folder.findFirst({ where: { id: where.parentId, ownerId } })
         : Promise.resolve(null),
     ]);
-    res.json({ current, folders, files });
+    const { files, nextCursor } = pageResult(rows, page.take);
+    res.json({ current, folders, files, nextCursor, total });
   }),
 );
 

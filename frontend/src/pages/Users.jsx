@@ -12,12 +12,14 @@ import {
  ShieldCheck,
  Trash2,
  UserCheck,
+ UserMinus,
  UserPlus,
+ Users2,
  UserX,
  X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { UserApi } from '../api/endpoints.js';
+import { UserApi, GroupApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 import { formatBytes, formatDate } from '../lib/format.js';
 import { confirmDialog, promptDialog } from '../components/Dialog.jsx';
@@ -352,11 +354,170 @@ export default function Users() {
  <ShieldCheck className="mr-1 inline h-3.5 w-3.5 align-text-bottom" />
  Self-registered users start as <strong>pending</strong> and must be approved before they can upload. Banned users cannot log in or access the API; their files are preserved.
  </div>
+ <GroupsCard />
  <CreateUserModal
  open={createOpen}
  onClose={() => setCreateOpen(false)}
  onCreated={refresh}
  />
+ </div>
+ );
+}
+
+// Task5 #14 — teams: share a file/folder to a whole group at once. Admins
+// create groups and manage membership here; the ShareModal picks them up.
+function GroupsCard() {
+ const qc = useQueryClient();
+ const { data } = useQuery({ queryKey: ['groups'], queryFn: () => GroupApi.list() });
+ const groups = data?.groups || [];
+ const [newName, setNewName] = useState('');
+ const [memberInput, setMemberInput] = useState({}); // groupId -> identifier
+
+ const refresh = () => qc.invalidateQueries({ queryKey: ['groups'] });
+
+ const create = async (e) => {
+ e.preventDefault();
+ if (!newName.trim()) return;
+ try {
+ await GroupApi.create(newName.trim());
+ setNewName('');
+ refresh();
+ toast.success('Group created');
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to create group');
+ }
+ };
+
+ const rename = async (g) => {
+ const name = await promptDialog({
+ title: 'Rename group',
+ defaultValue: g.name,
+ confirmText: 'Rename',
+ });
+ if (!name || name === g.name) return;
+ try {
+ await GroupApi.rename(g.id, name);
+ refresh();
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to rename');
+ }
+ };
+
+ const remove = async (g) => {
+ const ok = await confirmDialog({
+ title: `Delete group "${g.name}"?`,
+ message: 'Members lose access to everything shared with this group.',
+ confirmText: 'Delete group',
+ });
+ if (!ok) return;
+ await GroupApi.remove(g.id);
+ refresh();
+ };
+
+ const addMember = async (e, g) => {
+ e.preventDefault();
+ const identifier = (memberInput[g.id] || '').trim();
+ if (!identifier) return;
+ try {
+ await GroupApi.addMember(g.id, identifier);
+ setMemberInput((m) => ({ ...m, [g.id]: '' }));
+ refresh();
+ toast.success(`Added ${identifier}`);
+ } catch (err) {
+ toast.error(err.response?.data?.error || 'Failed to add member');
+ }
+ };
+
+ const removeMember = async (g, u) => {
+ await GroupApi.removeMember(g.id, u.id);
+ refresh();
+ };
+
+ return (
+ <div className="mt-6">
+ <div className="mb-3 flex items-center gap-2">
+ <Users2 className="h-5 w-5 text-brand-600 dark:text-brand-400" />
+ <h2 className="text-base font-semibold">Groups</h2>
+ </div>
+ <div className="card p-4">
+ <form onSubmit={create} className="mb-4 flex gap-2">
+ <input
+ className="input max-w-xs"
+ placeholder="New group name"
+ value={newName}
+ maxLength={80}
+ onChange={(e) => setNewName(e.target.value)}
+ />
+ <button type="submit" className="btn-primary shrink-0">
+ <Plus className="h-4 w-4" /> Create group
+ </button>
+ </form>
+ {groups.length === 0 && (
+ <div className="py-4 text-center text-sm text-slate-500 dark:text-slate-400">
+ No groups yet. Create one to share files with a whole team at once.
+ </div>
+ )}
+ <div className="space-y-4">
+ {groups.map((g) => (
+ <div key={g.id} className="rounded-lg border border-slate-200 p-3 dark:border-slate-800">
+ <div className="mb-2 flex items-center gap-2">
+ <span className="font-medium text-slate-900 dark:text-slate-100">{g.name}</span>
+ <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
+ {g.memberCount} member{g.memberCount === 1 ? '' : 's'}
+ </span>
+ <div className="ml-auto flex gap-1">
+ <button
+ className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
+ onClick={() => rename(g)}
+ title="Rename group"
+ >
+ <Pencil className="h-3.5 w-3.5" />
+ </button>
+ <button
+ className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-600 dark:hover:bg-slate-800"
+ onClick={() => remove(g)}
+ title="Delete group"
+ >
+ <Trash2 className="h-3.5 w-3.5" />
+ </button>
+ </div>
+ </div>
+ <div className="mb-2 flex flex-wrap gap-1.5">
+ {(g.members || []).map((u) => (
+ <span
+ key={u.id}
+ className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-700 dark:bg-slate-800 dark:text-slate-200"
+ >
+ {u.name || u.email}
+ <button
+ onClick={() => removeMember(g, u)}
+ className="text-slate-400 hover:text-red-600"
+ title="Remove from group"
+ aria-label={`Remove ${u.email} from ${g.name}`}
+ >
+ <UserMinus className="h-3 w-3" />
+ </button>
+ </span>
+ ))}
+ {(g.members || []).length === 0 && (
+ <span className="text-xs text-slate-400 dark:text-slate-500">No members yet</span>
+ )}
+ </div>
+ <form onSubmit={(e) => addMember(e, g)} className="flex gap-2">
+ <input
+ className="input max-w-xs"
+ placeholder="Add member by username or email"
+ value={memberInput[g.id] || ''}
+ onChange={(e) => setMemberInput((m) => ({ ...m, [g.id]: e.target.value }))}
+ />
+ <button type="submit" className="btn-secondary shrink-0">
+ <UserPlus className="h-4 w-4" /> Add
+ </button>
+ </form>
+ </div>
+ ))}
+ </div>
+ </div>
  </div>
  );
 }

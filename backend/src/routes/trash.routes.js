@@ -6,7 +6,9 @@ import { asyncHandler } from '../utils/async.js';
 import { notFound } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { removeObject } from '../services/storage.service.js';
+import { removeHls } from '../services/hls.service.js';
 import { subUsage } from '../services/quota.service.js';
+import { emitFileChange } from '../realtime/bus.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -68,7 +70,9 @@ router.post(
       );
     }
     const results = await prisma.$transaction(ops);
-    res.json({ restored: results.reduce((n, r) => n + r.count, 0) });
+    const restored = results.reduce((n, r) => n + r.count, 0);
+    if (restored) emitFileChange(req.user.id); // Task5 #5
+    res.json({ restored });
   }),
 );
 
@@ -89,6 +93,7 @@ router.delete(
       totalBytes += BigInt(v.size);
     }
     if (file.thumbnailKey) await removeObject(file.thumbnailKey);
+    if (file.hlsReady) await removeHls(file.id);
     await prisma.file.delete({ where: { id: file.id } });
     await subUsage(file.ownerId, Number(totalBytes));
     res.json({ ok: true });
@@ -110,6 +115,7 @@ router.post(
         total += BigInt(v.size);
       }
       if (f.thumbnailKey) await removeObject(f.thumbnailKey);
+      if (f.hlsReady) await removeHls(f.id);
     }
     await prisma.$transaction([
       prisma.file.deleteMany({ where: { ownerId, trashedAt: { not: null } } }),

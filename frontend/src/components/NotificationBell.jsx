@@ -58,7 +58,9 @@ export default function NotificationBell({ compact = false }) {
  const { data } = useQuery({
  queryKey: ['notifications'],
  queryFn: () => NotificationApi.list({ limit: 30 }),
- refetchInterval: 30_000,
+ // Task5 #5 — WebSocket push (Layout) invalidates this query instantly; the
+ // interval is just a slow fallback for when the socket is down.
+ refetchInterval: 120_000,
  refetchOnWindowFocus: true,
  });
 

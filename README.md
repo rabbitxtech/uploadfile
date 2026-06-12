@@ -1,6 +1,6 @@
 # Uploader — File Upload & Management
 
-Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend) + **MinIO** (object storage) + **PostgreSQL/MySQL/SQLite** (metadata via Prisma). Ships with a one-command **production deploy** (Caddy + automatic HTTPS), optional **OCR + semantic search**, **WebDAV**, **real-time presence**, and **email** (Mailpit in dev, docker-mailserver in prod).
+Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend) + **MinIO** (object storage) + **PostgreSQL/MySQL/SQLite** (metadata via Prisma). Ships with a one-command **production deploy** (Caddy + automatic HTTPS), **2FA**, optional **OCR + semantic search (pgvector)**, **HLS adaptive streaming**, **Whisper transcription**, **WebDAV**, **real-time presence + server push**, and **email** (Mailpit in dev, docker-mailserver in prod).
 
 ## Features
 
@@ -9,17 +9,20 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Admin approval to upload** — self-registered users can log in and browse but **can't upload until an admin approves them** (admins are notified when a new user verifies; approve/revoke from the Users page). First-user/admin-created accounts are pre-approved.
 - Username **or** email login (regular usernames must be `letters/digits/. _ -`)
 - JWT auth with `admin` / `user` roles, per-user quota
+- **Two-factor authentication (TOTP)** — scan a QR with any authenticator app; login becomes password + 6-digit code, with 8 single-use recovery codes (shown once, stored hashed). Disabling 2FA requires password **and** a valid code.
 - **Session management** — every login is a revocable session; a "Active sessions" panel lists your devices (browser/OS, IP, last active) and lets you sign out one or all others. Changing your password signs out every other device; a reset signs out all.
 - **API keys** (`uk_` prefix, hashed) for programmatic / WebDAV access
 - **Password reset** by email (forgot-password → tokened reset link); confirm-password on register & password change
 - Admin can create users, change roles, change quotas, reset passwords, ban/unban, delete
 - Admin can browse another user's files read-only via `/files?as=<userId>`
-- Welcome / role-change / quota-change / ban / share-download notifications (in-app inbox, 30s polling)
+- **Groups** (admin-managed) — add users to named groups, then share files/folders to a whole group at once
+- Welcome / role-change / quota-change / ban / share-download notifications — **pushed live over WebSocket** (slow poll only as fallback)
 
 ### Files & folders
 - Folder tree in its own collapsible column (round edge toggle on desktop, modal on mobile) with expand/collapse and **drag-and-drop file move**
 - **Chunked / resumable upload** for large files (MinIO multipart, 8 MiB parts)
 - **Upload from URL** — server-side fetch into storage (SSRF-guarded)
+- **Import video from URL** — paste a link from a curated allowlist of reputable sources (YouTube, Vimeo, Dailymotion, TED, Internet Archive, Wikimedia, SoundCloud, X, Facebook, Instagram, Reddit, Twitch); the server downloads the best-quality video with `yt-dlp` (+ffmpeg) into your files, with a **live progress** indicator. Extend the allowlist via `VIDEO_IMPORT_HOSTS`.
 - **Replace-on-duplicate** flow: name conflict surfaces a dialog with "apply to all remaining" checkbox; old file + MinIO object atomically replaced, quota refunded
 - File versioning, tags (chip + popover editor), full-text search, tag filter
 - Preview (images w/ lightbox + EXIF, video, audio, text/markdown w/ syntax highlight) and auto-generated thumbnails (`sharp`)
@@ -28,22 +31,27 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Trash bin (soft delete + restore + empty + hard delete) with **auto-clean** — items left in trash past a retention window are purged automatically (quota refunded)
 - Bulk operations: trash, move, **bulk rename**, **download as ZIP**
 - List view + image **grid view** (with auto-suggestion when ≥ 50% of files are images)
+- **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and both views are **virtualized** (`@tanstack/react-virtual`), so a folder with thousands of files scrolls smoothly
 - Recent (recently accessed) and Starred views; **storage analytics** + **duplicate finder**
 
 ### Search & AI (optional, best-effort)
 - **OCR** of images and PDFs (`tesseract` + `pdftoppm`) — extracted text is searchable
-- **Semantic search** via on-device embeddings (`@xenova/transformers`, MiniLM) — no external API
+- **Semantic search** via on-device embeddings (`@xenova/transformers`, MiniLM) — no external API. On PostgreSQL the ranking runs **in the database via `pgvector`** (`vector(384)` column + HNSW index, ANN `ORDER BY <=>`); MySQL/SQLite fall back to in-process cosine
+- **Whisper transcription** (opt-in, `WHISPER_ENABLED`) — videos/audio are auto-transcribed with `whisper.cpp`; the transcript becomes searchable (plain + semantic) and a `.vtt` subtitle file appears next to the video, picked up by the player automatically
 
 ### Sharing
 - **Public share links** for files or folders with expiry, password (bcrypt), download cap, optional **upload drop-box** (`allowUpload`)
-- **Share to a specific user** (grants) — recipient sees it under "Shared with me"
+- Per-link **label** (tell your links apart), **QR code** (show it to someone standing next to you), and **extend/remove expiry** after creation
+- **Share to a specific user or to a group** (grants) — recipients see it under "Shared with me" (group shares marked `via "<group>"`)
 - Public folder share renders a list + "Download folder as ZIP"
 - Owner notified when shared content is downloaded; per-share access log
 
 ### Real-time & access
 - **Presence**: live viewer avatars on a file preview (WebSocket `/ws`)
+- **Server push** on the same socket — notifications and file changes (upload/rename/move/trash from another device or a drop-box) refresh open tabs instantly
 - **WebDAV** mount (`/webdav`, HTTP Basic / API key) — browse storage as a network drive
 - **Protected video streaming**: authenticated `/stream` endpoint with HTTP Range + a short-lived **HttpOnly cookie** credential (never in the URL, so it can't be shared or replayed; MinIO URL never exposed, `nodownload`)
+- **HLS adaptive streaming** (opt-in, `HLS_ENABLED`) — large videos are background-transcoded to a 720p/480p ladder; the player (`hls.js`, native on Safari) adapts to the connection and falls back to the plain stream. Segments are protected by the same stream cookie
 
 ### UX
 - Light + Dark mode (Tailwind class-based, persisted, FOUC-safe via inline init script)
@@ -62,7 +70,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Refuses to start in prod without a strong `JWT_SECRET`; redacted structured logs
 
 ### Storage / infra
-- Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite`
+- Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
 - Two MinIO clients (internal Docker hostname + public-facing) so presigned URLs are browser-reachable
 - **Email** — Mailpit catcher in dev, docker-mailserver (or any SMTP relay) in prod
 - **One-command production deploy** with Caddy + automatic HTTPS (see below)
@@ -79,7 +87,7 @@ Then open:
 - Backend API: <http://localhost:4000>
 - MinIO console: <http://localhost:9001> (login: `minioadmin` / `minioadmin`)
 
-The first account you register becomes `admin`. Schema is applied automatically on container start via `prisma db push`.
+The first account you register becomes `admin`. Versioned migrations are applied automatically on container start via `prisma migrate deploy`.
 
 The dev stack also runs **Mailpit** — outgoing mail (e.g. password resets) is caught and viewable at <http://localhost:8025> (nothing leaves the machine).
 
@@ -132,6 +140,10 @@ npm run db:switch mysql          # rewrites prisma/schema.prisma provider line
 npx prisma migrate dev --name init
 ```
 
+The script also toggles PostgreSQL-only schema lines (tagged `///pg-only`, e.g. the
+`pgvector` embedding column) — semantic search transparently falls back to in-process
+cosine on MySQL/SQLite.
+
 ### Required env vars
 
 ```
@@ -155,29 +167,44 @@ SMTP_ALLOW_SELFSIGNED             set true only for a relay with a self-signed c
 
 # AI (optional — features degrade gracefully if the CLIs/models are absent)
 TRANSFORMERS_CACHE                where the embedding model is cached (Docker: /app/models)
+
+# Media (optional, CPU-heavy — both default OFF; one job at a time)
+HLS_ENABLED / HLS_MIN_MB          background-transcode videos ≥ N MB (default 50) to HLS
+WHISPER_ENABLED / WHISPER_MODEL / WHISPER_LANG
+                                  auto-transcribe video/audio (model `base` by default,
+                                  downloaded lazily on first use)
+
+# Video import (yt-dlp)
+VIDEO_IMPORT_HOSTS                extra comma-separated hosts for the curated allowlist
+YTDLP_TIMEOUT_MS                  stuck-process safety net (default 2h)
 ```
 
-> **Note:** the backend Docker image is **Debian-based** (`node:20-bookworm-slim`) and installs `tesseract-ocr`, `poppler-utils`, and `ffmpeg` so OCR, semantic search, and video posters work out of the box. Running on an alpine/musl base disables these.
+> **Note:** the backend Docker image is **Debian-based** (`node:20-bookworm-slim`) and installs `tesseract-ocr`, `poppler-utils`, `ffmpeg`, `yt-dlp`, and a compiled `whisper-cli` so OCR, semantic search, video posters, video import, HLS, and transcription work out of the box. Running on an alpine/musl base disables these. The Postgres container uses the **`pgvector/pgvector:pg16`** image — don't swap it for plain `postgres` (the pgvector migration would fail).
 
 ## Repo layout
 
 ```
 backend/                Express + Prisma + MinIO SDK
-  prisma/schema.prisma  Multi-provider data model (User, Folder, File, FileVersion,
-                        Tag, Share, ShareAccess, FileGrant, FolderGrant, Comment,
-                        Collection, UploadSession, Notification, AuditLog, ApiKey,
-                        Token, WatchProgress)
-  scripts/switch-db.js  Rewrites the `provider` line in schema.prisma
+  prisma/schema.prisma  Multi-provider data model (User, Session, Folder, File,
+                        FileVersion, Tag, Share, ShareAccess, Group, GroupMember,
+                        FileGrant, FolderGrant, Comment, Collection, UploadSession,
+                        Notification, AuditLog, ApiKey, Token, WatchProgress)
+  prisma/migrations/    Versioned SQL migrations (applied at container start)
+  scripts/switch-db.js  Rewrites the `provider` line (+ toggles ///pg-only fields)
   src/
     config/             env, prisma client, minio (internal + public clients), logger
     middleware/         auth (requireAuth + API keys), error handler, rate limiting
-    realtime/           presence.js — WebSocket viewer presence at /ws
-    routes/             auth, files, folders, upload, shares, grants, collections,
-                        trash, users, notifications, keys, audit, webdav
-    services/           storage (minio), thumbnail, video, quota, notify, mail,
-                        ai (OCR + embeddings), checksum, audit, access (grants)
-    utils/              http error helpers, asyncHandler
-  Dockerfile            Debian base; installs tesseract/poppler/ffmpeg; migrate + serve
+    realtime/           presence.js (viewer presence at /ws), bus.js (server push)
+    routes/             auth, files, folders, upload, shares, grants, groups,
+                        collections, trash, users, notifications, keys, audit, webdav
+    services/           storage (minio), thumbnail, video, media, hls, transcribe,
+                        youtube (yt-dlp), quota, notify, mail, ai (OCR + embeddings
+                        + pgvector), totp, session, retention, checksum, audit,
+                        access (grants — single source of truth, incl. groups)
+    utils/              http error helpers, asyncHandler, listquery (pagination),
+                        vector (pgvector helpers)
+  Dockerfile            Debian base; installs tesseract/poppler/ffmpeg/yt-dlp,
+                        compiles whisper-cli; migrate + serve
 
 frontend/               React + Vite + Tailwind + React Query + Zustand (PWA)
   index.html            inline theme-init script (avoids dark-mode flash)
@@ -188,12 +215,13 @@ frontend/               React + Vite + Tailwind + React Query + Zustand (PWA)
                         PreviewModal, VideoPlayer, AudioPlayer, ImageLightbox,
                         TextPreview, ShareModal, AddToCollectionModal,
                         BulkRenameModal, CommandPalette, NotificationBell
-    pages/              Login, Register, Forgot/ResetPassword, Files, Recent,
-                        Starred, Trash, Shares, SharedWithMe, Shared (public),
-                        Collections, CollectionView, Duplicates, Stats, Audit,
-                        Profile, Users (admin)
+    pages/              Login (2FA step), Register, VerifyEmail, Forgot/ResetPassword,
+                        Files, Recent, Starred, Trash, Shares, SharedWithMe,
+                        Shared (public), Collections, CollectionView, Duplicates,
+                        Stats, Audit, Profile (2FA + sessions), Users (admin + groups)
     store/              auth (zustand persisted), theme (zustand persisted)
-    lib/                format helpers, presence (WS client), uid (secure-ctx fallbacks)
+    lib/                format helpers, presence (WS client + server events),
+                        uid (secure-ctx fallbacks), outbox, shareTarget
 
 docker-compose.yml      Postgres + MinIO + backend + frontend + Mailpit (dev)
 docker-compose.prod.yml Caddy (HTTPS) + prod env + optional docker-mailserver
@@ -205,35 +233,42 @@ docs/                   deploy.md, mail-setup.md
 
 ```
 /api/auth              register, login, me, verify-email, resend-verification,
+                       2fa/verify (login step), 2fa/setup, 2fa/enable, 2fa/disable,
                        forgot-password, reset-password,
                        sessions (list / revoke / revoke-others), logout
-/api/folders           list (?parentId=, admin ?ownerId=), tree, breadcrumb,
-                       create, rename/move, soft-delete
-/api/files             single-shot upload, from-url, get, rename/move/tag,
-                       soft-delete, download, presigned URL (?inline=1 for preview),
+/api/folders           list (?parentId=, admin ?ownerId=; files cursor-paginated
+                       ?cursor=&take=&sort=&dir= → nextCursor/total), tree,
+                       breadcrumb, create, rename/move, soft-delete
+/api/files             single-shot upload, from-url, from-youtube (yt-dlp),
+                       get, rename/move/tag, soft-delete, download,
+                       presigned URL (?inline=1 for preview),
                        preview stream, thumbnail, versions, recent, starred,
                        :id/star (toggle), :id/optimize, :id/comments,
-                       :id/stream (+ :id/stream-token), :id/progress,
+                       :id/stream (+ :id/stream-token),
+                       :id/stream/hls/:name (HLS), :id/progress,
                        bulk trash/rename/move/zip,
-                       search (q + tag + OCR), semantic-search, reindex (admin),
-                       duplicates, analytics
+                       search (q + tag + OCR), semantic-search (pgvector),
+                       reindex (admin), duplicates, analytics
 /api/upload            chunked init (with optional replaceFileId) / part /
                        complete / resume / abort
-/api/shares            create (file or folder), list, revoke
+/api/shares            create (file or folder, +label), list,
+                       :id PATCH (label / extend expiry), revoke
                        + public/:token, public/:token/unlock (password),
                          public/:token/download, public/:token/upload (drop-box)
-/api/grants            shared-with-me, grant file/folder to a user, revoke
+/api/grants            shared-with-me (direct + via group),
+                       grant file/folder to a user or group, revoke
+/api/groups            list; admin: create/rename/delete, add/remove members
 /api/collections       list/create/get/update/delete, add/remove files
 /api/keys              list / create / revoke API keys (uk_ prefix)
 /api/audit             admin: list audit log
 /api/trash             list trashed, restore, empty, hard-delete a file
 /api/users             /me PATCH (name + password)
                        admin: list, create (with role/quota), update
-                       (role/quota/ban/name/password), delete
+                       (role/quota/ban/approve/name/password), delete
 /api/notifications     list (?unread=1, ?limit=N), :id/read, mark-all-read,
                        :id DELETE, clear (delete all)
 /webdav                WebDAV (HTTP Basic / API key)
-/ws                    WebSocket presence (?token=&fileId=)
+/ws                    WebSocket presence + server push (?token=&fileId=)
 ```
 
 Interactive API docs (Swagger UI) are served at `/api/docs`.

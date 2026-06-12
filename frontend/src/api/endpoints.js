@@ -1,4 +1,5 @@
-import { api } from './client.js';
+import { api, apiBase } from './client.js';
+import { useAuth } from '../store/auth.js';
 
 export const AuthApi = {
   register: (data) => api.post('/auth/register', data).then((r) => r.data),
@@ -11,11 +12,22 @@ export const AuthApi = {
   verifyEmail: (token) => api.post('/auth/verify-email', { token }).then((r) => r.data),
   resendVerification: (identifier) =>
     api.post('/auth/resend-verification', { identifier }).then((r) => r.data),
+  // Two-factor auth (Task5 #1)
+  totpVerify: (tmpToken, code) =>
+    api.post('/auth/2fa/verify', { tmpToken, code }).then((r) => r.data),
+  totpSetup: () => api.post('/auth/2fa/setup').then((r) => r.data),
+  totpEnable: (code) => api.post('/auth/2fa/enable', { code }).then((r) => r.data),
+  totpDisable: (password, code) =>
+    api.post('/auth/2fa/disable', { password, code }).then((r) => r.data),
   // Session management (Task 2)
   sessions: () => api.get('/auth/sessions').then((r) => r.data),
   revokeSession: (id) => api.delete(`/auth/sessions/${id}`).then((r) => r.data),
   revokeOtherSessions: () => api.post('/auth/sessions/revoke-others').then((r) => r.data),
   logout: () => api.post('/auth/logout').then((r) => r.data),
+};
+
+export const ConfigApi = {
+  get: () => api.get('/config').then((r) => r.data),
 };
 
 export const KeyApi = {
@@ -30,9 +42,20 @@ export const AuditApi = {
 };
 
 export const FolderApi = {
-  list: (parentId, { ownerId } = {}) =>
+  // Task5 #20 — files are cursor-paginated; pass sort/dir so the server
+  // returns pages in display order (the client only ever sees a slice).
+  list: (parentId, { ownerId, cursor, take, sort, dir } = {}) =>
     api
-      .get('/folders', { params: { parentId: parentId ?? '', ...(ownerId ? { ownerId } : {}) } })
+      .get('/folders', {
+        params: {
+          parentId: parentId ?? '',
+          ...(ownerId ? { ownerId } : {}),
+          ...(cursor ? { cursor } : {}),
+          ...(take ? { take } : {}),
+          ...(sort ? { sort } : {}),
+          ...(dir ? { dir } : {}),
+        },
+      })
       .then((r) => r.data),
   tree: ({ ownerId } = {}) =>
     api.get('/folders/tree', { params: ownerId ? { ownerId } : {} }).then((r) => r.data),
@@ -53,6 +76,55 @@ export const FileApi = {
   recent: () => api.get('/files/recent').then((r) => r.data),
   fromUrl: (url, folderId) =>
     api.post('/files/from-url', { url, folderId: folderId || undefined }).then((r) => r.data),
+  // YouTube import streams NDJSON progress events (so we use fetch, not axios).
+  // `onProgress(evt)` gets { type:'progress'|'status', percent, speed, eta, status }.
+  // Resolves with the created file; rejects with the server's error message.
+  fromYoutube: async (url, folderId, onProgress) => {
+    const token = useAuth.getState().token;
+    const resp = await fetch(`${apiBase}/files/from-youtube`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({ url, folderId: folderId || undefined }),
+    });
+    // A pre-stream validation error comes back as a normal JSON 4xx.
+    if (!resp.ok && (resp.headers.get('content-type') || '').includes('application/json')) {
+      const data = await resp.json().catch(() => ({}));
+      throw new Error(data.error || `Request failed (${resp.status})`);
+    }
+    if (!resp.body) throw new Error('No response stream');
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+    let result = null;
+    let errorMsg = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf('\n')) >= 0) {
+        const line = buf.slice(0, idx).trim();
+        buf = buf.slice(idx + 1);
+        if (!line) continue;
+        let evt;
+        try {
+          evt = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (evt.type === 'done') result = evt.file;
+        else if (evt.type === 'error') errorMsg = evt.error;
+        else onProgress?.(evt);
+      }
+    }
+    if (errorMsg) throw new Error(errorMsg);
+    if (!result) throw new Error('Import did not complete');
+    return result;
+  },
   duplicates: (ownerId) =>
     api.get('/files/duplicates', { params: ownerId ? { ownerId } : {} }).then((r) => r.data),
   bulkRename: (renames) => api.post('/files/bulk/rename', { renames }).then((r) => r.data),
@@ -101,6 +173,17 @@ export const GrantApi = {
   removeFolder: (id) => api.delete(`/grants/folder/${id}`).then((r) => r.data),
 };
 
+export const GroupApi = {
+  list: () => api.get('/groups').then((r) => r.data),
+  create: (name) => api.post('/groups', { name }).then((r) => r.data),
+  rename: (id, name) => api.patch(`/groups/${id}`, { name }).then((r) => r.data),
+  remove: (id) => api.delete(`/groups/${id}`).then((r) => r.data),
+  addMember: (id, identifier) =>
+    api.post(`/groups/${id}/members`, { identifier }).then((r) => r.data),
+  removeMember: (id, userId) =>
+    api.delete(`/groups/${id}/members/${userId}`).then((r) => r.data),
+};
+
 export const CommentApi = {
   list: (fileId) => api.get(`/files/${fileId}/comments`).then((r) => r.data),
   add: (fileId, body) => api.post(`/files/${fileId}/comments`, { body }).then((r) => r.data),
@@ -119,6 +202,7 @@ export const TrashApi = {
 export const ShareApi = {
   list: () => api.get('/shares').then((r) => r.data),
   create: (data) => api.post('/shares', data).then((r) => r.data),
+  update: (id, data) => api.patch(`/shares/${id}`, data).then((r) => r.data),
   remove: (id) => api.delete(`/shares/${id}`).then((r) => r.data),
   access: (id) => api.get(`/shares/${id}/access`).then((r) => r.data),
   public: (token) => api.get(`/shares/public/${token}`).then((r) => r.data),

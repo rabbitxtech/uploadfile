@@ -5,7 +5,8 @@ import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
 import { requireAuth, API_KEY_PREFIX, hashApiKey } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { notFound } from '../utils/errors.js';
+import { forbidden, notFound } from '../utils/errors.js';
+import { env } from '../config/env.js';
 import { audit, clientIp } from '../services/audit.service.js';
 
 const router = Router();
@@ -27,6 +28,12 @@ router.post(
   '/',
   asyncHandler(async (req, res) => {
     const { name } = z.object({ name: z.string().trim().min(1).max(80) }).parse(req.body);
+    // Task 15 — cap active keys per user (admins exempt; 0 = unlimited).
+    const cap = env.limits.maxApiKeysPerUser;
+    if (cap > 0 && req.user.role !== 'admin') {
+      const active = await prisma.apiKey.count({ where: { userId: req.user.id, revokedAt: null } });
+      if (active >= cap) throw forbidden(`API key limit reached (max ${cap}). Revoke an unused key first.`);
+    }
     const secret = API_KEY_PREFIX + crypto.randomBytes(24).toString('base64url');
     const prefix = secret.slice(0, 10);
     const created = await prisma.apiKey.create({

@@ -22,14 +22,12 @@ import {
 } from '../services/storage.service.js';
 import { addUsage, assertQuota, subUsage } from '../services/quota.service.js';
 import { generateThumbnail, canThumbnail } from '../services/thumbnail.service.js';
-import {
-  canFaststart,
-  optimizeFileVideo,
-  canVideoThumbnail,
-  generateVideoThumbnail,
-} from '../services/video.service.js';
+import { canVideoThumbnail, generateVideoThumbnail } from '../services/video.service.js';
 import { backfillChecksum } from '../services/checksum.service.js';
 import { indexFile } from '../services/ai.service.js';
+import { postProcessMedia } from '../services/media.service.js';
+import { removeHls } from '../services/hls.service.js';
+import { emitFileChange } from '../realtime/bus.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -212,6 +210,7 @@ router.post(
       removeObject(oldObjectKey).catch((e) =>
         console.warn('[upload] failed to remove replaced object:', e?.message),
       );
+      removeHls(s.replaceFileId).catch(() => {}); // drop the replaced file's renditions
     }
 
     await prisma.uploadSession.update({
@@ -248,8 +247,9 @@ router.post(
         .catch((e) => console.warn('[vthumb] failed:', e?.message));
     }
 
-    // Fast-start remux for video (best-effort, async) so seeking is smooth.
-    if (canFaststart(s.mimeType)) optimizeFileVideo(file.id);
+    // Fast-start remux → HLS renditions + transcription (best-effort, async).
+    postProcessMedia(file.id, s.mimeType);
+    emitFileChange(req.user.id, s.folderId); // Task5 #5
 
     res.status(201).json(file);
   }),

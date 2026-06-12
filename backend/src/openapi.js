@@ -98,6 +98,35 @@ export const openapiDocument = {
         responses: { 200: ok, 401: { description: 'Invalid credentials' } },
       },
     },
+    '/api/auth/2fa/verify': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Complete a 2FA login (tmpToken from /login + TOTP or recovery code)',
+        requestBody: jsonBody({ tmpToken: { type: 'string' }, code: { type: 'string' } }, ['tmpToken', 'code']),
+        responses: { 200: ok, 401: { description: 'Invalid code or expired login' } },
+      },
+    },
+    '/api/auth/2fa/setup': {
+      post: { tags: ['Auth'], summary: 'Begin TOTP setup (returns secret + QR)', security: bearer, responses: { 200: ok } },
+    },
+    '/api/auth/2fa/enable': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Confirm setup with a code — enables 2FA, returns one-time recovery codes',
+        security: bearer,
+        requestBody: jsonBody({ code: { type: 'string' } }, ['code']),
+        responses: { 200: ok, 400: { description: 'Invalid code' } },
+      },
+    },
+    '/api/auth/2fa/disable': {
+      post: {
+        tags: ['Auth'],
+        summary: 'Disable 2FA (requires password + valid code)',
+        security: bearer,
+        requestBody: jsonBody({ password: { type: 'string' }, code: { type: 'string' } }, ['password', 'code']),
+        responses: { 200: ok, 401: { description: 'Wrong password or code' } },
+      },
+    },
     '/api/auth/me': {
       get: { tags: ['Auth'], summary: 'Current user', security: bearer, responses: { 200: ok } },
     },
@@ -105,10 +134,16 @@ export const openapiDocument = {
       get: {
         tags: ['Folders'],
         summary: 'List a folder (or root)',
+        description:
+          'Files are cursor-paginated. The first page also returns the folder list and `total`; follow `nextCursor` (null when exhausted) to fetch more files.',
         security: bearer,
         parameters: [
           { name: 'parentId', in: 'query', schema: { type: 'string' } },
           { name: 'ownerId', in: 'query', schema: { type: 'string' }, description: 'Admin only' },
+          { name: 'cursor', in: 'query', schema: { type: 'string' }, description: 'File id from the previous page’s nextCursor' },
+          { name: 'take', in: 'query', schema: { type: 'integer', default: 200, maximum: 500 } },
+          { name: 'sort', in: 'query', schema: { type: 'string', enum: ['name', 'type', 'size', 'modified'], default: 'name' } },
+          { name: 'dir', in: 'query', schema: { type: 'string', enum: ['asc', 'desc'], default: 'asc' } },
         ],
         responses: { 200: ok },
       },
@@ -179,17 +214,35 @@ export const openapiDocument = {
     },
     '/api/shares': {
       get: { tags: ['Shares'], summary: 'List my share links', security: bearer, responses: { 200: ok } },
-      post: { tags: ['Shares'], summary: 'Create a public share link', security: bearer, requestBody: jsonBody({ fileId: { type: 'string' }, folderId: { type: 'string' }, password: { type: 'string' }, expiresAt: { type: 'string', format: 'date-time' }, maxDownloads: { type: 'integer' } }), responses: { 201: ok } },
+      post: { tags: ['Shares'], summary: 'Create a public share link', security: bearer, requestBody: jsonBody({ fileId: { type: 'string' }, folderId: { type: 'string' }, label: { type: 'string' }, password: { type: 'string' }, expiresAt: { type: 'string', format: 'date-time' }, maxDownloads: { type: 'integer' } }), responses: { 201: ok } },
+    },
+    '/api/shares/{id}': {
+      patch: { tags: ['Shares'], summary: 'Update share label / extend expiry', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: jsonBody({ label: { type: 'string', nullable: true }, expiresAt: { type: 'string', format: 'date-time', nullable: true } }), responses: { 200: ok } },
+      delete: { tags: ['Shares'], summary: 'Revoke a share link', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: ok } },
     },
     '/api/shares/public/{token}': {
       get: { tags: ['Shares'], summary: 'Public share info (no auth)', parameters: [{ name: 'token', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: ok, 403: { description: 'Expired / limit reached' } } },
     },
     '/api/grants': {
       get: { tags: ['Grants'], summary: 'List grants on a file/folder', security: bearer, parameters: [{ name: 'fileId', in: 'query', schema: { type: 'string' } }, { name: 'folderId', in: 'query', schema: { type: 'string' } }], responses: { 200: ok } },
-      post: { tags: ['Grants'], summary: 'Share a file/folder with a user', security: bearer, requestBody: jsonBody({ fileId: { type: 'string' }, folderId: { type: 'string' }, identifier: { type: 'string' }, permission: { type: 'string', enum: ['view', 'edit'] } }, ['identifier']), responses: { 201: ok } },
+      post: { tags: ['Grants'], summary: 'Share a file/folder with a user or group', security: bearer, requestBody: jsonBody({ fileId: { type: 'string' }, folderId: { type: 'string' }, identifier: { type: 'string' }, groupId: { type: 'string' }, permission: { type: 'string', enum: ['view', 'edit'] } }), responses: { 201: ok } },
     },
     '/api/grants/shared-with-me': {
-      get: { tags: ['Grants'], summary: 'Files/folders shared with me', security: bearer, responses: { 200: ok } },
+      get: { tags: ['Grants'], summary: 'Files/folders shared with me (directly or via group)', security: bearer, responses: { 200: ok } },
+    },
+    '/api/groups': {
+      get: { tags: ['Groups'], summary: 'List groups (members included for admins)', security: bearer, responses: { 200: ok } },
+      post: { tags: ['Groups'], summary: 'Create a group (admin)', security: bearer, requestBody: jsonBody({ name: { type: 'string' } }, ['name']), responses: { 201: ok } },
+    },
+    '/api/groups/{id}': {
+      patch: { tags: ['Groups'], summary: 'Rename a group (admin)', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: jsonBody({ name: { type: 'string' } }, ['name']), responses: { 200: ok } },
+      delete: { tags: ['Groups'], summary: 'Delete a group (admin)', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: ok } },
+    },
+    '/api/groups/{id}/members': {
+      post: { tags: ['Groups'], summary: 'Add a member by username/email (admin)', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: jsonBody({ identifier: { type: 'string' } }, ['identifier']), responses: { 201: ok } },
+    },
+    '/api/groups/{id}/members/{userId}': {
+      delete: { tags: ['Groups'], summary: 'Remove a member (admin)', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }, { name: 'userId', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: ok } },
     },
     '/api/trash': {
       get: { tags: ['Trash'], summary: 'List trashed items (admin ?ownerId=)', security: bearer, parameters: [{ name: 'ownerId', in: 'query', schema: { type: 'string' } }], responses: { 200: ok } },

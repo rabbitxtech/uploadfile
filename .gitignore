@@ -49,5 +49,5 @@ backend/prisma/*.db
 Thumbs.db
 *.local
 
-# Claude Code local overrides (keep .claude/CLAUDE.md + task files tracked)
-.claude/settings.local.json
+# Claude Code local files (CLAUDE.md / task notes are local-only, not tracked)
+.claude

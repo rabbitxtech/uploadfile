@@ -1,6 +1,9 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    # Task5 #12 — pgvector-enabled PG16 (same major version, data volume stays
+    # compatible). The add_pgvector migration REINDEXes text indexes once to
+    # absorb the musl->glibc collation change from the old alpine image.
+    image: pgvector/pgvector:pg16
     container_name: uploader-postgres
     restart: unless-stopped
     environment:
@@ -81,6 +84,13 @@ services:
       PUBLIC_BASE_URL: http://localhost:4000
       DEFAULT_QUOTA_BYTES: "5368709120"
       TRASH_RETENTION_DAYS: "30" # auto-purge trashed items older than N days (0 disables)
+      ZIP_DOWNLOAD_ENABLED: "false" # temporarily locked: bulk + folder-share ZIP download disabled
+      # Task5 #9/#10 — opt-in, CPU-heavy background jobs.
+      HLS_ENABLED: "true"
+      HLS_MIN_MB: "50"
+      WHISPER_ENABLED: "true"
+      WHISPER_MODEL: "base"
+      WHISPER_LANG: "auto"
       # B9 — email (Mailpit). Point at a real relay (Gmail/SendGrid) for prod.
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

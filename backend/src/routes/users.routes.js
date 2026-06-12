@@ -23,6 +23,7 @@ function publicUser(u) {
     banned: u.banned,
     approved: u.approved,
     emailVerified: u.emailVerified,
+    totpEnabled: u.totpEnabled,
     quotaBytes: u.quotaBytes.toString(),
     usedBytes: u.usedBytes.toString(),
     createdAt: u.createdAt,

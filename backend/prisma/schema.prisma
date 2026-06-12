@@ -20,6 +20,12 @@ model User {
   banned     Boolean  @default(false)
   emailVerified Boolean @default(false) // B9
   approved   Boolean  @default(false) // self-registered users need admin approval to upload
+  // Task5 #1 — TOTP two-factor auth. totpSecret is set at setup time but 2FA is
+  // only enforced once totpEnabled flips true (after the first code verifies).
+  // recoveryCodes holds a JSON array of sha256 hashes; each is single-use.
+  totpSecret    String?
+  totpEnabled   Boolean @default(false)
+  recoveryCodes String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -37,6 +43,7 @@ model User {
   apiKeys        ApiKey[]
   tokens         Token[]
   sessions       Session[]
+  groupMemberships GroupMember[]
 }
 
 // Login sessions — one row per device/login. The JWT carries the session id
@@ -148,6 +155,10 @@ model File {
   checksum     String?
   ocrText      String?   // K1 — extracted text (OCR) for search
   embedding    String?   // K4 — JSON float[] semantic embedding of name+ocrText
+  // Task5 #12 — pgvector mirror of `embedding` for fast ANN search (HNSW index,
+  // created in migration add_pgvector). PostgreSQL-only: scripts/switch-db.js
+  // comments the next line out for mysql/sqlite (JS cosine is the fallback there).
+  embeddingVec Unsupported("vector(384)")? ///pg-only
 
   folderId String?
   folder   Folder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
@@ -156,6 +167,8 @@ model File {
 
   thumbnailKey String?
   hasPreview   Boolean @default(false)
+  // Task5 #9 — true once HLS renditions exist under h/<fileId>/ in MinIO.
+  hlsReady     Boolean @default(false)
 
   currentVersion Int           @default(1)
   versions       FileVersion[]
@@ -209,6 +222,7 @@ model Share {
   folderId     String?
   ownerId      String
   owner        User      @relation(fields: [ownerId], references: [id], onDelete: Cascade)
+  label        String? // Task5 #15 — owner-facing note to tell links apart
   password     String?
   expiresAt    DateTime?
   maxDownloads Int?
@@ -248,33 +262,65 @@ model Notification {
   @@index([userId, createdAt])
 }
 
-// Internal share: grant another registered user access to a file.
+// Task5 #14 — teams: a named set of users a grant can target all at once.
+model Group {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+
+  members      GroupMember[]
+  fileGrants   FileGrant[]
+  folderGrants FolderGrant[]
+}
+
+model GroupMember {
+  id        String   @id @default(uuid())
+  groupId   String
+  group     Group    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([groupId, userId])
+  @@index([userId])
+}
+
+// Internal share: grant another registered user — or a whole group (Task5 #14)
+// — access to a file. Exactly one of userId/groupId is set.
 model FileGrant {
   id         String   @id @default(uuid())
   fileId     String
   file       File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  userId     String   // grantee
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String?  // grantee user (null for group grants)
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId    String?  // grantee group (null for user grants)
+  group      Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
   permission String   @default("view") // "view" | "edit"
   createdAt  DateTime @default(now())
 
   @@unique([fileId, userId])
+  @@unique([fileId, groupId])
   @@index([userId])
+  @@index([groupId])
 }
 
-// Internal share: grant a user access to a folder (inherited by descendants
-// via Folder.path prefix matching).
+// Internal share: grant a user or group access to a folder (inherited by
+// descendants via Folder.path prefix matching).
 model FolderGrant {
   id         String   @id @default(uuid())
   folderId   String
   folder     Folder   @relation(fields: [folderId], references: [id], onDelete: Cascade)
-  userId     String   // grantee
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String?  // grantee user (null for group grants)
+  user       User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  groupId    String?  // grantee group (null for user grants)
+  group      Group?   @relation(fields: [groupId], references: [id], onDelete: Cascade)
   permission String   @default("view") // "view" | "edit"
   createdAt  DateTime @default(now())
 
   @@unique([folderId, userId])
+  @@unique([folderId, groupId])
   @@index([userId])
+  @@index([groupId])
 }
 
 model Comment {

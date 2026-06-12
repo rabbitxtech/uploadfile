@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { Cloud, Download, Lock, Folder as FolderIcon, File as FileIcon, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { ShareApi } from '../api/endpoints.js';
+import { ShareApi, ConfigApi } from '../api/endpoints.js';
 import { apiBase } from '../api/client.js';
 import { formatBytes } from '../lib/format.js';
 
@@ -13,6 +13,13 @@ export default function Shared() {
  const [error, setError] = useState(null);
  const [loading, setLoading] = useState(false);
  const [uploading, setUploading] = useState(false);
+ const [zipEnabled, setZipEnabled] = useState(true);
+
+ useEffect(() => {
+ ConfigApi.get()
+ .then((c) => setZipEnabled(c.zipDownloadEnabled !== false))
+ .catch(() => {});
+ }, []);
 
  const reload = () =>
  ShareApi.public(token)
@@ -184,6 +191,11 @@ export default function Shared() {
  Remaining downloads: {info.remainingDownloads}
  </div>
  )}
+ {info.folder && !zipEnabled ? (
+ <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
+ Folder ZIP download is temporarily disabled.
+ </div>
+ ) : (
  <form onSubmit={download} className="space-y-3">
  {info.hasPassword && (
  <div className="relative">
@@ -206,6 +218,7 @@ export default function Shared() {
  : 'Download'}
  </button>
  </form>
+ )}
 
  {info.allowUpload && (
  <div className="mt-4 rounded-lg border border-dashed border-brand-300 bg-brand-50/50 p-4 text-center dark:border-brand-500/40 dark:bg-brand-500/10">

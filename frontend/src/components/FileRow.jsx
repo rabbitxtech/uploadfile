@@ -219,7 +219,7 @@ export function FolderRow({
  return (
  <tr
  className={clsx(
- 'group hover:bg-slate-50 dark:hover:bg-slate-800/40',
+ 'group transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-slate-800/40',
  selected && 'bg-brand-50 dark:bg-brand-500/10',
  dragHover && 'ring-2 ring-inset ring-brand-500',
  )}
@@ -317,7 +317,7 @@ export function FileRow({
  return (
  <tr
  className={clsx(
- 'group hover:bg-slate-50 dark:hover:bg-slate-800/40',
+ 'group transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-slate-800/40',
  selected && 'bg-brand-50 dark:bg-brand-500/10',
  )}
  draggable

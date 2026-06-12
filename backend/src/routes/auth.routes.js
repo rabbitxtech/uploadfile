@@ -12,10 +12,17 @@ import { authLimiter } from '../middleware/ratelimit.js';
 import { audit, clientIp } from '../services/audit.service.js';
 import { sendPasswordReset, sendVerifyEmail } from '../services/mail.service.js';
 import { startSession, revokeUserSessions } from '../services/session.service.js';
+import {
+  generateSetup,
+  generateRecoveryCodes,
+  verifyTotp,
+  verifySecondFactor,
+} from '../services/totp.service.js';
+import jwt from 'jsonwebtoken';
 
 const router = Router();
 router.use(
-  ['/login', '/register', '/forgot-password', '/reset-password', '/verify-email', '/resend-verification'],
+  ['/login', '/register', '/forgot-password', '/reset-password', '/verify-email', '/resend-verification', '/2fa/verify'],
   authLimiter,
 ); // B5
 
@@ -70,6 +77,7 @@ function publicUser(u) {
     usedBytes: u.usedBytes.toString(),
     emailVerified: u.emailVerified,
     approved: u.approved,
+    totpEnabled: u.totpEnabled,
     createdAt: u.createdAt,
   };
 }
@@ -201,8 +209,102 @@ router.post(
       audit('login_unverified', { userId: user.id, ip });
       throw forbidden('Please verify your email before signing in. Check your inbox for the link.');
     }
+    // Task5 #1 — second factor. Password is correct but no session is created
+    // yet: hand back a short-lived intermediate token that only /2fa/verify
+    // accepts (claim p:'2fa'), and let the client prompt for the code.
+    if (user.totpEnabled) {
+      const tmpToken = jwt.sign({ sub: user.id, p: '2fa' }, env.jwtSecret, { expiresIn: '5m' });
+      audit('login_2fa_pending', { userId: user.id, ip });
+      return res.json({ requires2fa: true, tmpToken });
+    }
     audit('login', { userId: user.id, ip });
     res.json({ token: await startSession(user, req), user: publicUser(user) });
+  }),
+);
+
+// ---- Two-factor auth (Task5 #1) ----
+
+// Complete a 2FA login: exchange the intermediate token + a TOTP code (or a
+// one-time recovery code) for a real session.
+router.post(
+  '/2fa/verify',
+  asyncHandler(async (req, res) => {
+    const { tmpToken, code } = z
+      .object({ tmpToken: z.string().min(10), code: z.string().trim().min(4).max(64) })
+      .parse(req.body);
+    let payload;
+    try {
+      payload = jwt.verify(tmpToken, env.jwtSecret);
+    } catch {
+      throw unauthorized('Login expired — please sign in again');
+    }
+    if (payload.p !== '2fa') throw unauthorized('Invalid login token');
+    const user = await prisma.user.findUnique({ where: { id: payload.sub } });
+    if (!user || user.banned || !user.totpEnabled) throw unauthorized('Invalid login token');
+
+    const ip = clientIp(req);
+    if (!(await verifySecondFactor(user, code))) {
+      audit('login_2fa_failed', { userId: user.id, ip });
+      throw unauthorized('Invalid authentication code');
+    }
+    audit('login', { userId: user.id, meta: { mfa: true }, ip });
+    res.json({ token: await startSession(user, req), user: publicUser(user) });
+  }),
+);
+
+// Begin 2FA setup: store a fresh secret (not yet enforced) and return the
+// provisioning QR + secret for the authenticator app.
+router.post(
+  '/2fa/setup',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    if (req.user.totpEnabled) throw badRequest('Two-factor auth is already enabled');
+    const { secret, otpauth, qr } = await generateSetup(req.user);
+    await prisma.user.update({ where: { id: req.user.id }, data: { totpSecret: secret } });
+    res.json({ secret, otpauth, qr });
+  }),
+);
+
+// Confirm setup with the first code from the app → enforce 2FA and hand out
+// the one-time recovery codes (shown exactly once).
+router.post(
+  '/2fa/enable',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { code } = z.object({ code: z.string().trim().min(4).max(16) }).parse(req.body);
+    if (req.user.totpEnabled) throw badRequest('Two-factor auth is already enabled');
+    if (!req.user.totpSecret) throw badRequest('Run setup first');
+    if (!verifyTotp(req.user.totpSecret, code)) throw badRequest('Invalid authentication code');
+
+    const { raw, hashes } = generateRecoveryCodes();
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { totpEnabled: true, recoveryCodes: JSON.stringify(hashes) },
+    });
+    audit('totp_enable', { userId: user.id, ip: clientIp(req) });
+    res.json({ ok: true, recoveryCodes: raw, user: publicUser(user) });
+  }),
+);
+
+// Turn 2FA off — requires the account password AND a valid code (TOTP or
+// recovery) so a hijacked session can't silently weaken the account.
+router.post(
+  '/2fa/disable',
+  requireAuth,
+  asyncHandler(async (req, res) => {
+    const { password, code } = z
+      .object({ password: z.string().min(1), code: z.string().trim().min(4).max(64) })
+      .parse(req.body);
+    if (!req.user.totpEnabled) throw badRequest('Two-factor auth is not enabled');
+    if (!(await bcrypt.compare(password, req.user.password))) throw unauthorized('Wrong password');
+    if (!(await verifySecondFactor(req.user, code))) throw unauthorized('Invalid authentication code');
+
+    const user = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { totpEnabled: false, totpSecret: null, recoveryCodes: null },
+    });
+    audit('totp_disable', { userId: user.id, ip: clientIp(req) });
+    res.json({ ok: true, user: publicUser(user) });
   }),
 );
 

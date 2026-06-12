@@ -38,6 +38,18 @@ export async function statObject(key) {
   return minio.statObject(BUCKET, key);
 }
 
+// Remove every object under a key prefix (e.g. HLS renditions h/<fileId>/).
+export async function removePrefix(prefix) {
+  const keys = await new Promise((resolve, reject) => {
+    const out = [];
+    const stream = minio.listObjectsV2(BUCKET, prefix, true);
+    stream.on('data', (o) => o?.name && out.push(o.name));
+    stream.on('end', () => resolve(out));
+    stream.on('error', reject);
+  });
+  if (keys.length) await minio.removeObjects(BUCKET, keys);
+}
+
 export async function presignedGet(key, expirySeconds = 600, filename) {
   const headers = {};
   if (filename) {

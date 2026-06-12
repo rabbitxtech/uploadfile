@@ -79,6 +79,7 @@ export default function SharedWithMe() {
                   </div>
                   <div className="truncate text-xs text-slate-500 dark:text-slate-400">
                     from {f.owner?.name || f.owner?.email}
+                    {f.viaGroup ? ` · via group "${f.viaGroup}"` : ''}
                   </div>
                 </div>
                 <PermBadge permission={f.permission} />
@@ -123,6 +124,11 @@ export default function SharedWithMe() {
                       </td>
                       <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
                         {f.owner?.name || f.owner?.email}
+                        {f.viaGroup && (
+                          <span className="ml-1 text-slate-400 dark:text-slate-500">
+                            · via "{f.viaGroup}"
+                          </span>
+                        )}
                       </td>
                       <td className="px-3 py-2">
                         <PermBadge permission={f.permission} />

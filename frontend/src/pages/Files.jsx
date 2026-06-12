@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useQuery, useInfiniteQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import {
  FolderPlus,
  ChevronRight,
@@ -22,9 +23,11 @@ import {
  Sparkles,
  X,
  Camera,
+ Film,
+ Plus,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { FolderApi, FileApi, AuthApi, TrashApi } from '../api/endpoints.js';
+import { FolderApi, FileApi, AuthApi, TrashApi, ConfigApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 import { api } from '../api/client.js';
 import Uploader from '../components/Uploader.jsx';
@@ -35,9 +38,12 @@ import BulkRenameModal from '../components/BulkRenameModal.jsx';
 import AddToCollectionModal from '../components/AddToCollectionModal.jsx';
 import { promptDialog } from '../components/Dialog.jsx';
 import { consumeSharedFiles } from '../lib/shareTarget.js';
+import ActionMenu from '../components/ActionMenu.jsx';
 
 // H3 — sort a list of files/folders by a key + direction. Folders have no
 // meaningful size/type, so those keys fall back to name for folders.
+// Task5 #20: only used for search results now — the folder listing arrives
+// pre-sorted from the server (sort key/dir ride along with the cursor).
 const SORT_LABELS = { name: 'Name', type: 'Type', size: 'Size', modified: 'Modified' };
 function sortList(items, key, dir, isFolder) {
  const mul = dir === 'asc' ? 1 : -1;
@@ -75,6 +81,21 @@ function SortHeader({ label, sortKey, sort, onSort }) {
  </button>
  </th>
  );
+}
+
+// Task5 #20 — column count for the virtualized grid; mirrors the old
+// `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6` breakpoints
+// (Tailwind breakpoints are viewport-based, so window width is the right input).
+function useGridCols() {
+ const calc = () =>
+  window.innerWidth >= 1024 ? 6 : window.innerWidth >= 768 ? 4 : window.innerWidth >= 640 ? 3 : 2;
+ const [cols, setCols] = useState(calc);
+ useEffect(() => {
+  const onResize = () => setCols(calc());
+  window.addEventListener('resize', onResize);
+  return () => window.removeEventListener('resize', onResize);
+ }, []);
+ return cols;
 }
 
 function ImageCard({ file, onPreview }) {
@@ -136,6 +157,9 @@ export default function Files() {
  const ownerFilter = viewingAs ? asUserId : null;
  // Self-registered users must be approved by an admin before they can upload.
  const canUpload = currentUser?.role === 'admin' || currentUser?.approved;
+ // Feature flag (server-controlled): ZIP download can be temporarily locked.
+ const { data: appConfig } = useQuery({ queryKey: ['config'], queryFn: () => ConfigApi.get() });
+ const zipEnabled = appConfig?.zipDownloadEnabled !== false;
 
  const [selected, setSelected] = useState({ files: new Set(), folders: new Set() });
  const [preview, setPreview] = useState(null);
@@ -209,11 +233,25 @@ export default function Files() {
  return () => clearTimeout(t);
  }, [search]);
 
- const listQuery = useQuery({
- queryKey: ['folders', folderId || 'root', ownerFilter || 'self'],
- queryFn: () => FolderApi.list(folderId || null, { ownerId: ownerFilter }),
+ // Task5 #20 — files arrive in cursor pages of 200, pre-sorted by the server
+ // (the sort is part of the query key, so changing it refetches page 1).
+ const listQuery = useInfiniteQuery({
+ queryKey: ['folders', folderId || 'root', ownerFilter || 'self', sort.key, sort.dir],
+ queryFn: ({ pageParam }) =>
+ FolderApi.list(folderId || null, {
+ ownerId: ownerFilter,
+ cursor: pageParam,
+ sort: sort.key,
+ dir: sort.dir,
+ }),
+ initialPageParam: undefined,
+ getNextPageParam: (last) => last.nextCursor || undefined,
  enabled: !debouncedQ && !tagFilter,
  });
+ const listPages = listQuery.data?.pages;
+ const listFolders = listPages?.[0]?.folders;
+ const listFiles = useMemo(() => (listPages || []).flatMap((p) => p.files), [listPages]);
+ const listTotal = listPages?.[0]?.total ?? null;
  const searchQuery = useQuery({
  queryKey: ['search', debouncedQ, tagFilter],
  queryFn: () => FileApi.search(debouncedQ, tagFilter || undefined),
@@ -309,6 +347,46 @@ export default function Files() {
  }
  };
 
+ const onImportYoutube = async () => {
+ const url = await promptDialog({
+ title: 'Import video from URL',
+ message:
+ 'Paste a link from a supported source (YouTube, Vimeo, Dailymotion, TED, Internet Archive, Wikimedia, SoundCloud, X, Facebook, Instagram, Reddit, Twitch). The server downloads the best-quality video into this folder. Long videos can take several minutes.',
+ placeholder: 'https://… (YouTube, Vimeo, Dailymotion, TED…)',
+ confirmText: 'Import',
+ });
+ if (!url) return;
+ const id = toast.loading('Preparing YouTube download…');
+ try {
+ await FileApi.fromYoutube(url.trim(), folderId || null, (evt) => {
+ if (evt.type === 'progress') {
+ const pct = (evt.percent || '').trim();
+ const speed = (evt.speed || '').trim();
+ const eta = (evt.eta || '').trim();
+ const bad = (v) => !v || /unknown|^na$|n\/a/i.test(v);
+ const extra = [!bad(speed) && speed, !bad(eta) && `ETA ${eta}`]
+ .filter(Boolean)
+ .join(' · ');
+ toast.loading(`Downloading from YouTube… ${pct}${extra ? ` (${extra})` : ''}`, { id });
+ } else if (evt.type === 'status') {
+ const label =
+ evt.status === 'merging'
+ ? 'Merging video + audio…'
+ : evt.status === 'uploading'
+ ? 'Saving to your files…'
+ : 'Downloading from YouTube…';
+ toast.loading(label, { id });
+ }
+ });
+ toast.success('Video saved to your files', { id });
+ qc.invalidateQueries({ queryKey: ['folders'] });
+ qc.invalidateQueries({ queryKey: ['file-recent'] });
+ refreshUser();
+ } catch (e) {
+ toast.error(e.message || 'Import failed', { id });
+ }
+ };
+
  const clearSel = () => setSelected({ files: new Set(), folders: new Set() });
 
  const downloadOne = async (file) => {
@@ -352,21 +430,95 @@ export default function Files() {
  ? { folders: [], files: semanticQuery.data?.files || [] }
  : searchActive
  ? { folders: [], files: searchQuery.data?.files || [] }
- : { folders: listQuery.data?.folders || [], files: listQuery.data?.files || [] };
+ : { folders: listFolders || [], files: listFiles };
 
+ // Search endpoints return a full array → sort locally; the folder listing is
+ // already in server order (Task5 #20), re-sorting a single page would lie.
  const sortedFolders = useMemo(
- () => sortList(data.folders, sort.key, sort.dir, true),
- [data.folders, sort],
+ () => (searchActive ? sortList(data.folders, sort.key, sort.dir, true) : data.folders),
+ [data.folders, sort, searchActive],
  );
  const sortedFiles = useMemo(
- () => sortList(data.files, sort.key, sort.dir, false),
- [data.files, sort],
+ () => (searchActive ? sortList(data.files, sort.key, sort.dir, false) : data.files),
+ [data.files, sort, searchActive],
  );
  // Keep the flat ordered list of selectable rows in sync for shift-range select.
  orderedRef.current = [
  ...sortedFolders.map((f) => `folder:${f.id}`),
  ...sortedFiles.map((f) => `file:${f.id}`),
  ];
+
+ // Task5 #20 — virtualized rendering (window-scrolled). Both virtualizers are
+ // created unconditionally (hooks must not be conditional); only the active
+ // view renders one. List rows can't be measured (FileRow renders a <tr> we
+ // can't ref), so fixed estimates + spacer rows; grid rows self-measure.
+ const tableRows = useMemo(
+ () => [
+ ...sortedFolders.map((f) => ({ kind: 'folder', item: f })),
+ ...sortedFiles.map((f) => ({ kind: 'file', item: f })),
+ ],
+ [sortedFolders, sortedFiles],
+ );
+ const listWrapRef = useRef(null);
+ const rowVirtualizer = useWindowVirtualizer({
+ count: tableRows.length,
+ estimateSize: (i) => (i < sortedFolders.length ? 45 : 74),
+ overscan: 12,
+ scrollMargin: listWrapRef.current?.offsetTop ?? 0,
+ });
+ const vRows = rowVirtualizer.getVirtualItems();
+ const padTop = vRows.length
+ ? Math.max(0, vRows[0].start - rowVirtualizer.options.scrollMargin)
+ : 0;
+ const padBottom = vRows.length
+ ? Math.max(
+ 0,
+ rowVirtualizer.getTotalSize() -
+ (vRows[vRows.length - 1].end - rowVirtualizer.options.scrollMargin),
+ )
+ : 0;
+
+ const gridCols = useGridCols();
+ const gridWrapRef = useRef(null);
+ const [gridW, setGridW] = useState(0);
+ useEffect(() => {
+ const el = gridWrapRef.current;
+ if (!el || typeof ResizeObserver === 'undefined') return undefined;
+ const ro = new ResizeObserver(() => setGridW(el.clientWidth));
+ ro.observe(el);
+ setGridW(el.clientWidth);
+ return () => ro.disconnect();
+ }, [view]);
+ const gridRowCount = Math.ceil(sortedFiles.length / gridCols);
+ // Card = square image (width-driven) + ~26px caption + 12px row gap.
+ const gridRowEstimate = gridW ? (gridW - (gridCols - 1) * 12) / gridCols + 38 : 220;
+ const gridVirtualizer = useWindowVirtualizer({
+ count: gridRowCount,
+ estimateSize: () => gridRowEstimate,
+ overscan: 6,
+ scrollMargin: gridWrapRef.current?.offsetTop ?? 0,
+ });
+ const gRows = gridVirtualizer.getVirtualItems();
+
+ // Auto-fetch the next cursor page when scrolling near the bottom.
+ const { hasNextPage, isFetchingNextPage, fetchNextPage } = listQuery;
+ useEffect(() => {
+ if (searchActive || !hasNextPage || isFetchingNextPage) return;
+ const last = view === 'grid' ? gRows[gRows.length - 1] : vRows[vRows.length - 1];
+ if (!last) return;
+ const count = view === 'grid' ? gridRowCount : tableRows.length;
+ if (last.index >= count - 8) fetchNextPage();
+ }, [
+ searchActive,
+ hasNextPage,
+ isFetchingNextPage,
+ view,
+ vRows,
+ gRows,
+ gridRowCount,
+ tableRows.length,
+ fetchNextPage,
+ ]);
 
  const handleSelect = (kind, id, checked, shiftKey) => {
  const idx = orderedRef.current.indexOf(`${kind}:${id}`);
@@ -459,6 +611,25 @@ export default function Files() {
 
  const qs = viewingAs ? `?as=${asUserId}` : '';
 
+ // Task5 #20 — paging status under the list/grid. Scrolling auto-loads; the
+ // button is a fallback when row-height estimates keep the sentinel off-screen.
+ const loadMoreFooter =
+ !searchActive && (hasNextPage || isFetchingNextPage) ? (
+ <div className="flex items-center justify-center gap-3 px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+ <span>
+ Loaded {sortedFiles.length}
+ {listTotal != null ? ` of ${listTotal}` : ''} files
+ </span>
+ <button
+ className="font-medium text-brand-600 hover:underline disabled:opacity-50 dark:text-brand-400"
+ onClick={() => fetchNextPage()}
+ disabled={isFetchingNextPage}
+ >
+ {isFetchingNextPage ? 'Loading…' : 'Load more'}
+ </button>
+ </div>
+ ) : null;
+
  return (
  <div className="p-4 md:p-6">
  {viewingAs && (
@@ -534,34 +705,19 @@ export default function Files() {
  </span>
  )}
  {!viewingAs && (
- <>
- {canUpload && (
- <>
- <button
- className="btn-primary"
- onClick={() => uploaderRef.current?.pick()}
- title="Or drag files anywhere on this page"
- >
- <Upload className="h-4 w-4" /> Upload files
- </button>
- <button
- className="btn-secondary"
- onClick={() => uploaderRef.current?.capture()}
- title="Take a photo with the camera"
- >
- <Camera className="h-4 w-4" /> Take photo
- </button>
- </>
- )}
- <button className="btn-secondary" onClick={onNewFolder}>
- <FolderPlus className="h-4 w-4" /> New folder
- </button>
- {canUpload && (
- <button className="btn-secondary" onClick={onUploadFromUrl} title="Download a file from a link">
- <Link2 className="h-4 w-4" /> From URL
- </button>
- )}
- </>
+ <ActionMenu
+ variant="button"
+ icon={Plus}
+ align="left"
+ label="Add new"
+ items={[
+ { label: 'Upload files', icon: Upload, hidden: !canUpload, onClick: () => uploaderRef.current?.pick() },
+ { label: 'Take photo', icon: Camera, hidden: !canUpload, onClick: () => uploaderRef.current?.capture() },
+ { label: 'From URL', icon: Link2, hidden: !canUpload, onClick: onUploadFromUrl },
+ { label: 'Import video (URL)', icon: Film, hidden: !canUpload, onClick: onImportYoutube },
+ { label: 'New folder', icon: FolderPlus, onClick: onNewFolder },
+ ]}
+ />
  )}
  <div className="ml-auto flex items-center gap-1 rounded-md border border-slate-300 px-1 dark:border-slate-700">
  <select
@@ -615,9 +771,11 @@ export default function Files() {
  <span className="text-sm text-slate-500 dark:text-slate-400">
  {selected.files.size + selected.folders.size} selected
  </span>
+ {zipEnabled && (
  <button className="btn-secondary" onClick={bulkZip} disabled={!selected.files.size}>
  <Download className="h-4 w-4" /> Download zip
  </button>
+ )}
  {!viewingAs && (
  <>
  <button className="btn-secondary" onClick={() => setBulkRenameOpen(true)} disabled={!selected.files.size}>
@@ -658,7 +816,7 @@ export default function Files() {
  <Uploader
  ref={uploaderRef}
  folderId={folderId || null}
- existingFiles={listQuery.data?.files || []}
+ existingFiles={listFiles}
  onUploaded={() => {
  qc.invalidateQueries({ queryKey: ['folders'] });
  refreshUser();
@@ -668,18 +826,37 @@ export default function Files() {
  )}
 
  {view === 'grid' ? (
- <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
- {sortedFiles.map((file) => (
- <ImageCard key={file.id} file={file} onPreview={setPreview} />
- ))}
- {sortedFiles.length === 0 && (
- <div className="col-span-full py-12 text-center text-slate-500 dark:text-slate-400">
+ <div ref={gridWrapRef}>
+ {sortedFiles.length === 0 ? (
+ <div className="py-12 text-center text-slate-500 dark:text-slate-400">
  {debouncedQ || tagFilter ? 'No matches' : 'No files'}
  </div>
+ ) : (
+ <div className="relative" style={{ height: gridVirtualizer.getTotalSize() }}>
+ {gRows.map((vr) => (
+ <div
+ key={vr.key}
+ ref={gridVirtualizer.measureElement}
+ data-index={vr.index}
+ className="absolute left-0 grid w-full gap-3 pb-3"
+ style={{
+ transform: `translateY(${vr.start - gridVirtualizer.options.scrollMargin}px)`,
+ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
+ }}
+ >
+ {sortedFiles
+ .slice(vr.index * gridCols, vr.index * gridCols + gridCols)
+ .map((file) => (
+ <ImageCard key={file.id} file={file} onPreview={setPreview} />
+ ))}
+ </div>
+ ))}
+ </div>
  )}
+ {loadMoreFooter}
  </div>
  ) : (
- <div className="card overflow-x-auto">
+ <div className="card overflow-x-auto" ref={listWrapRef}>
  <table className="w-full min-w-[600px] text-sm">
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
@@ -692,9 +869,19 @@ export default function Files() {
  </tr>
  </thead>
  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
- {sortedFolders.map((f) => (
+ {padTop > 0 && (
+ <tr aria-hidden="true">
+ <td colSpan={6} style={{ height: padTop, padding: 0, border: 0 }} />
+ </tr>
+ )}
+ {vRows.map((vr) => {
+ const row = tableRows[vr.index];
+ if (!row) return null;
+ if (row.kind === 'folder') {
+ const f = row.item;
+ return (
  <FolderRow
- key={f.id}
+ key={`d-${f.id}`}
  folder={f}
  selected={selected.folders.has(f.id)}
  onSelect={(c, e) => handleSelect('folder', f.id, c, e?.shiftKey)}
@@ -704,8 +891,10 @@ export default function Files() {
  onShare={(x) => setShareTarget({ folderId: x.id, name: x.name })}
  onDropFile={moveFileTo}
  />
- ))}
- {sortedFiles.map((file) => (
+ );
+ }
+ const file = row.item;
+ return (
  <FileRow
  key={file.id}
  file={file}
@@ -730,8 +919,14 @@ export default function Files() {
  setSearch('');
  }}
  />
- ))}
- {!sortedFolders.length && !sortedFiles.length && (
+ );
+ })}
+ {padBottom > 0 && (
+ <tr aria-hidden="true">
+ <td colSpan={6} style={{ height: padBottom, padding: 0, border: 0 }} />
+ </tr>
+ )}
+ {!tableRows.length && (
  <tr>
  <td colSpan={6} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
  {debouncedQ || tagFilter
@@ -742,6 +937,7 @@ export default function Files() {
  )}
  </tbody>
  </table>
+ {loadMoreFooter}
  </div>
  )}
 

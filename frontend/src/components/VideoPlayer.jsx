@@ -35,7 +35,11 @@ function fmt(t) {
 // doesn't fire a burst of overlapping seeks.
 // resumeKey is the file id; watch progress is stored server-side (synced across
 // devices) via FileApi, keyed to the current user.
-export default function VideoPlayer({ src, name, onEnded, resumeKey, subtitles = [] }) {
+// hlsSrc (optional): adaptive-bitrate master playlist (Task5 #9). When set, the
+// player streams via hls.js (or natively on Safari) and `src` is only the
+// fallback if HLS fails. Segment requests authenticate with the same HttpOnly
+// stream cookie, so hls.js XHRs run withCredentials.
+export default function VideoPlayer({ src, hlsSrc, name, onEnded, resumeKey, subtitles = [] }) {
   const wrapRef = useRef(null);
   const videoRef = useRef(null);
   const fillRef = useRef(null);
@@ -98,6 +102,45 @@ export default function VideoPlayer({ src, name, onEnded, resumeKey, subtitles =
   }, [paint]);
 
   useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+
+  // Attach the HLS source. Safari plays m3u8 natively; everywhere else hls.js
+  // (lazy-loaded) drives MSE. On any fatal HLS error fall back to the plain
+  // progressive `src` so playback never hard-fails.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !hlsSrc) return undefined;
+    let hls;
+    let cancelled = false;
+    if (v.canPlayType('application/vnd.apple.mpegurl')) {
+      v.src = hlsSrc;
+    } else {
+      import('hls.js').then(({ default: Hls }) => {
+        if (cancelled) return;
+        if (!Hls.isSupported()) {
+          v.src = src;
+          return;
+        }
+        hls = new Hls({
+          // The stream cookie is HttpOnly — segment XHRs must send credentials.
+          xhrSetup: (xhr) => {
+            xhr.withCredentials = true;
+          },
+        });
+        hls.loadSource(hlsSrc);
+        hls.attachMedia(v);
+        hls.on(Hls.Events.ERROR, (_evt, data) => {
+          if (data?.fatal) {
+            hls.destroy();
+            v.src = src; // fall back to the plain Range stream
+          }
+        });
+      });
+    }
+    return () => {
+      cancelled = true;
+      hls?.destroy();
+    };
+  }, [hlsSrc, src]);
 
   // Resume-watching: persist the current position to the SERVER (synced across
   // devices) and restore it next time this file is opened by the same user.
@@ -368,7 +411,7 @@ export default function VideoPlayer({ src, name, onEnded, resumeKey, subtitles =
       {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
-        src={src}
+        src={hlsSrc ? undefined : src}
         preload="auto"
         playsInline
         controls={isTouch}

@@ -6,6 +6,7 @@ import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
 import { env } from '../config/env.js';
 import { removeObject } from './storage.service.js';
+import { removeHls } from './hls.service.js';
 import { subUsage } from './quota.service.js';
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
@@ -31,6 +32,7 @@ export async function purgeExpiredTrash() {
       bytes += BigInt(v.size);
     }
     if (f.thumbnailKey) await removeObject(f.thumbnailKey).catch(() => {});
+    if (f.hlsReady) await removeHls(f.id).catch(() => {});
     await prisma.file.delete({ where: { id: f.id } }).catch(() => {});
     freedByOwner.set(f.ownerId, (freedByOwner.get(f.ownerId) || 0n) + bytes);
     freed += bytes;

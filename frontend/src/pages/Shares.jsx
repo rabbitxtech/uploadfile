@@ -1,12 +1,62 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { Copy, Trash2, Folder as FolderIcon, File as FileIcon, BarChart3, X } from 'lucide-react';
+import {
+  Copy,
+  Trash2,
+  Folder as FolderIcon,
+  File as FileIcon,
+  BarChart3,
+  CalendarPlus,
+  Pencil,
+  QrCode,
+  X,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
+import QRCode from 'qrcode';
 import { ShareApi } from '../api/endpoints.js';
 import { formatDate } from '../lib/format.js';
 import { copyText } from '../lib/uid.js';
-import { confirmDialog } from '../components/Dialog.jsx';
+import { confirmDialog, promptDialog } from '../components/Dialog.jsx';
 import ActionMenu from '../components/ActionMenu.jsx';
+
+// Task5 #15 — show the link as a QR code (hand your phone to the person next
+// to you instead of dictating a URL).
+function QrModal({ share, onClose }) {
+  const [qr, setQr] = useState(null);
+  const url = `${window.location.origin}/s/${share.token}`;
+  useEffect(() => {
+    QRCode.toDataURL(url, { width: 280, margin: 1 })
+      .then(setQr)
+      .catch(() => setQr(null));
+  }, [url]);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+      <div className="card w-full max-w-xs p-5 text-center">
+        <div className="mb-3 flex items-center gap-2">
+          <QrCode className="h-5 w-5 text-brand-600 dark:text-brand-400" />
+          <span className="truncate font-medium">{share.label || share.folder?.name || share.file?.name || 'Share link'}</span>
+          <button className="ml-auto rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white" onClick={onClose}>
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+        {qr ? (
+          <img src={qr} alt="Share link QR code" className="mx-auto rounded-md border border-slate-200 bg-white p-1 dark:border-slate-700" width={240} height={240} />
+        ) : (
+          <div className="py-10 text-sm text-slate-400">Generating…</div>
+        )}
+        <button
+          className="btn-primary mt-3 w-full justify-center"
+          onClick={async () => {
+            const ok = await copyText(url);
+            toast[ok ? 'success' : 'error'](ok ? 'Copied' : 'Copy failed');
+          }}
+        >
+          <Copy className="h-4 w-4" /> Copy link
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function AccessModal({ share, onClose }) {
   const { data, isLoading } = useQuery({
@@ -56,6 +106,7 @@ function AccessModal({ share, onClose }) {
 export default function Shares() {
  const qc = useQueryClient();
  const [accessShare, setAccessShare] = useState(null);
+ const [qrShare, setQrShare] = useState(null);
  const { data } = useQuery({ queryKey: ['shares'], queryFn: () => ShareApi.list() });
 
  const remove = async (id) => {
@@ -75,6 +126,47 @@ export default function Shares() {
  toast[ok ? 'success' : 'error'](ok ? 'Copied' : 'Copy failed');
  };
 
+ // Task5 #15 — rename the owner-facing label on a link.
+ const editLabel = async (s) => {
+ const label = await promptDialog({
+ title: 'Share label',
+ message: 'A note only you can see, to tell links apart.',
+ defaultValue: s.label || '',
+ placeholder: 'e.g. for the design team',
+ confirmText: 'Save',
+ });
+ if (label === null) return;
+ await ShareApi.update(s.id, { label: label || null });
+ qc.invalidateQueries({ queryKey: ['shares'] });
+ toast.success('Label saved');
+ };
+
+ // Task5 #15 — extend an expiring link by N days (0 removes the expiry).
+ const extend = async (s) => {
+ const days = await promptDialog({
+ title: 'Extend link expiry',
+ message: s.expiresAt
+ ? `Currently expires ${formatDate(s.expiresAt)}. Days to extend (0 = never expire):`
+ : 'This link never expires. Days from now (0 = keep it that way):',
+ defaultValue: '7',
+ placeholder: 'days',
+ confirmText: 'Extend',
+ });
+ if (days === null) return;
+ const n = parseInt(days, 10);
+ if (Number.isNaN(n) || n < 0) return toast.error('Enter a number of days');
+ if (n === 0) {
+ await ShareApi.update(s.id, { expiresAt: null });
+ toast.success('Expiry removed');
+ } else {
+ const base = s.expiresAt && new Date(s.expiresAt) > new Date() ? new Date(s.expiresAt) : new Date();
+ const next = new Date(base.getTime() + n * 24 * 60 * 60 * 1000);
+ await ShareApi.update(s.id, { expiresAt: next.toISOString() });
+ toast.success(`Now expires ${formatDate(next.toISOString())}`);
+ }
+ qc.invalidateQueries({ queryKey: ['shares'] });
+ };
+
  return (
  <div className="p-6">
  <h1 className="mb-4 text-lg font-semibold">Share links</h1>
@@ -83,6 +175,7 @@ export default function Shares() {
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
  <th className="px-3 py-2">Target</th>
+ <th className="px-3 py-2">Label</th>
  <th className="px-3 py-2">Created</th>
  <th className="px-3 py-2">Expires</th>
  <th className="px-3 py-2">Downloads</th>
@@ -110,6 +203,16 @@ export default function Shares() {
  )}
  </span>
  </td>
+ <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+ <button
+ className="inline-flex max-w-[160px] items-center gap-1 rounded px-1 py-0.5 hover:bg-slate-100 dark:hover:bg-slate-800"
+ onClick={() => editLabel(s)}
+ title="Edit label"
+ >
+ <span className="truncate">{s.label || '—'}</span>
+ <Pencil className="h-3 w-3 shrink-0 text-slate-400 dark:text-slate-500" />
+ </button>
+ </td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{formatDate(s.createdAt)}</td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
  {s.expiresAt ? formatDate(s.expiresAt) : 'never'}
@@ -125,6 +228,9 @@ export default function Shares() {
  label="Share actions"
  items={[
  { label: 'Copy link', icon: Copy, onClick: () => copy(s.token) },
+ { label: 'Show QR code', icon: QrCode, onClick: () => setQrShare(s) },
+ { label: 'Edit label', icon: Pencil, onClick: () => editLabel(s) },
+ { label: 'Extend expiry', icon: CalendarPlus, onClick: () => extend(s) },
  { label: 'View access log', icon: BarChart3, onClick: () => setAccessShare(s) },
  { label: 'Revoke', icon: Trash2, danger: true, onClick: () => remove(s.id) },
  ]}
@@ -135,7 +241,7 @@ export default function Shares() {
  ))}
  {!data?.shares?.length && (
  <tr>
- <td colSpan={6} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
+ <td colSpan={7} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
  No shares yet
  </td>
  </tr>
@@ -144,6 +250,7 @@ export default function Shares() {
  </table>
  </div>
  {accessShare && <AccessModal share={accessShare} onClose={() => setAccessShare(null)} />}
+ {qrShare && <QrModal share={qrShare} onClose={() => setQrShare(null)} />}
  </div>
  );
 }

@@ -30,6 +30,7 @@ import {
 import { useAuth } from '../store/auth.js';
 import { useTheme } from '../store/theme.js';
 import { formatBytes } from '../lib/format.js';
+import { subscribeServerEvents } from '../lib/presence.js';
 import { FolderApi, FileApi, AuthApi } from '../api/endpoints.js';
 import FolderTree from './FolderTree.jsx';
 import NotificationBell from './NotificationBell.jsx';
@@ -42,10 +43,10 @@ function Item({ to, icon: Icon, children, onClick }) {
  onClick={onClick}
  end={to === '/files'}
  className={({ isActive }) =>
- 'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition ' +
+ 'flex items-center gap-2 rounded-md px-3 py-2 text-sm transition-all duration-150 ease-smooth ' +
  (isActive
- ? 'bg-brand-600 text-white'
- : 'text-slate-700 dark:text-slate-200 hover:bg-slate-200 dark:hover:bg-slate-800')
+ ? 'bg-brand-600 text-white shadow-sm'
+ : 'text-slate-700 dark:text-slate-200 hover:translate-x-0.5 hover:bg-slate-200 dark:hover:bg-slate-800')
  }
  >
  <Icon className="h-4 w-4" />
@@ -69,6 +70,22 @@ export default function Layout() {
  const [mobileTreeOpen, setMobileTreeOpen] = useState(false);
  // Offline indicator (PWA) — uploads made while offline are queued and retried.
  const [online, setOnline] = useState(typeof navigator === 'undefined' ? true : navigator.onLine);
+
+ // Task5 #5 — WebSocket push: a 'notification' event refetches the bell
+ // instantly (no 30s poll wait); 'file-change' refreshes the file lists so a
+ // second tab/device sees uploads/renames/deletes live.
+ useEffect(() => {
+ if (!user) return undefined;
+ return subscribeServerEvents((msg) => {
+ if (msg.type === 'notification') {
+ qc.invalidateQueries({ queryKey: ['notifications'] });
+ } else if (msg.type === 'file-change') {
+ qc.invalidateQueries({ queryKey: ['folders'] });
+ qc.invalidateQueries({ queryKey: ['folder-tree'] });
+ qc.invalidateQueries({ queryKey: ['trash'] });
+ }
+ });
+ }, [user, qc]);
 
  useEffect(() => {
  const up = () => setOnline(true);
@@ -349,7 +366,10 @@ export default function Layout() {
  </button>
  </div>
  </div>
+ {/* key on the path so each route change replays a soft fade-in */}
+ <div key={location.pathname} className="animate-fade-in">
  <Outlet />
+ </div>
  </main>
  <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
  {!online && (

@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { MoreVertical } from 'lucide-react';
+import { MoreVertical, ChevronDown } from 'lucide-react';
 import clsx from 'clsx';
 
 // A kebab (⋮) dropdown that gathers a row's actions into one menu. The panel is
@@ -11,8 +11,19 @@ import clsx from 'clsx';
 // callers can inline conditionals.
 const MENU_WIDTH = 184; // px (w-46-ish)
 
-export default function ActionMenu({ items = [], label = 'Actions', buttonClassName }) {
+// `variant`: 'kebab' (default, bare ⋮ icon) or 'button' (a btn-secondary trigger
+// with a custom `icon` + caret — e.g. a "+" New menu). `align`: which edge of the
+// menu lines up with the trigger ('right' default, 'left' for left-side triggers).
+export default function ActionMenu({
+  items = [],
+  label = 'Actions',
+  buttonClassName,
+  icon: Icon = MoreVertical,
+  variant = 'kebab',
+  align = 'right',
+}) {
   const visible = items.filter((i) => i && !i.hidden);
+  const asButton = variant === 'button';
   const btnRef = useRef(null);
   const menuRef = useRef(null);
   const [open, setOpen] = useState(false);
@@ -22,14 +33,15 @@ export default function ActionMenu({ items = [], label = 'Actions', buttonClassN
     if (!open) return;
     const r = btnRef.current?.getBoundingClientRect();
     if (!r) return;
-    let left = r.right - MENU_WIDTH;
+    let left = align === 'left' ? r.left : r.right - MENU_WIDTH;
+    if (left + MENU_WIDTH > window.innerWidth - 8) left = window.innerWidth - 8 - MENU_WIDTH;
     if (left < 8) left = 8;
     let top = r.bottom + 4;
     // Flip above the trigger if it would overflow the viewport bottom.
     const estH = visible.length * 34 + 8;
     if (top + estH > window.innerHeight - 8) top = Math.max(8, r.top - estH - 4);
     setPos({ top, left });
-  }, [open, visible.length]);
+  }, [open, visible.length, align]);
 
   useEffect(() => {
     if (!open) return;
@@ -62,8 +74,12 @@ export default function ActionMenu({ items = [], label = 'Actions', buttonClassN
           setOpen((x) => !x);
         }}
         className={clsx(
-          'rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white',
-          open && 'bg-slate-100 text-slate-900 dark:bg-slate-700 dark:text-white',
+          asButton
+            ? clsx('btn-secondary', open && 'ring-2 ring-brand-500/40')
+            : clsx(
+                'rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white',
+                open && 'bg-slate-100 text-slate-900 dark:bg-slate-700 dark:text-white',
+              ),
           buttonClassName,
         )}
         aria-label={label}
@@ -71,7 +87,8 @@ export default function ActionMenu({ items = [], label = 'Actions', buttonClassN
         aria-expanded={open}
         title={label}
       >
-        <MoreVertical className="h-4 w-4" />
+        <Icon className="h-4 w-4" />
+        {asButton && <ChevronDown className="h-3.5 w-3.5 opacity-70" />}
       </button>
       {open &&
         createPortal(

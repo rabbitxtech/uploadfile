@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
-import { Key, Plus, Trash2, Copy, Check, Monitor, LogOut } from 'lucide-react';
+import { Key, Plus, Trash2, Copy, Check, Monitor, LogOut, ShieldCheck, ShieldOff } from 'lucide-react';
 import { UserApi, KeyApi, AuthApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 import { formatBytes, formatDate } from '../lib/format.js';
@@ -110,6 +110,192 @@ function SessionsCard() {
         >
           <LogOut className="h-3.5 w-3.5" /> Sign out all other devices
         </button>
+      )}
+    </div>
+  );
+}
+
+// Task5 #1 — enable/disable TOTP two-factor auth.
+function TwoFactorCard() {
+  const { user, setUser } = useAuth();
+  const enabled = !!user?.totpEnabled;
+  const [setup, setSetup] = useState(null); // { qr, secret } during enrollment
+  const [code, setCode] = useState('');
+  const [recovery, setRecovery] = useState(null); // codes shown once after enable
+  const [showDisable, setShowDisable] = useState(false);
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  const begin = async () => {
+    setBusy(true);
+    try {
+      const r = await AuthApi.totpSetup();
+      setSetup(r);
+      setCode('');
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Failed to start setup');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enable = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await AuthApi.totpEnable(code.trim());
+      setUser(r.user);
+      setSetup(null);
+      setRecovery(r.recoveryCodes);
+      toast.success('Two-factor authentication enabled');
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Invalid code');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const disable = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const r = await AuthApi.totpDisable(password, code.trim());
+      setUser(r.user);
+      setShowDisable(false);
+      setPassword('');
+      setCode('');
+      toast.success('Two-factor authentication disabled');
+    } catch (e) {
+      toast.error(e.response?.data?.error || 'Failed');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card p-5 text-sm lg:col-span-2">
+      <div className="mb-2 flex items-center gap-2 font-medium">
+        {enabled ? (
+          <ShieldCheck className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <ShieldOff className="h-4 w-4 text-slate-400" />
+        )}
+        Two-factor authentication
+        {enabled && (
+          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+            Enabled
+          </span>
+        )}
+      </div>
+      <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
+        Protect your account with one-time codes from an authenticator app (Google Authenticator,
+        Authy, 1Password…). You'll be asked for a code each time you sign in.
+      </p>
+
+      {recovery && (
+        <div className="mb-3 rounded-md border border-amber-300 bg-amber-50 p-3 dark:border-amber-500/40 dark:bg-amber-500/10">
+          <div className="mb-1 text-xs font-medium text-amber-800 dark:text-amber-300">
+            Save these recovery codes now — each works once if you lose your phone. They won't be
+            shown again.
+          </div>
+          <div className="grid grid-cols-2 gap-1 sm:grid-cols-4">
+            {recovery.map((c) => (
+              <code key={c} className="rounded bg-white px-2 py-1 text-center text-xs dark:bg-slate-900">{c}</code>
+            ))}
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <button
+              onClick={async () => {
+                await copyText(recovery.join('\n'));
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1500);
+              }}
+              className="inline-flex items-center gap-1 rounded-md border border-amber-300 px-2 py-1 text-xs text-amber-800 hover:bg-amber-100 dark:border-amber-500/40 dark:text-amber-300 dark:hover:bg-amber-500/20"
+            >
+              {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />} Copy all
+            </button>
+            <button onClick={() => setRecovery(null)} className="text-xs text-slate-500 hover:underline dark:text-slate-400">
+              I saved them
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!enabled && !setup && (
+        <button onClick={begin} disabled={busy} className="btn-primary">
+          <ShieldCheck className="h-4 w-4" /> Enable 2FA
+        </button>
+      )}
+
+      {!enabled && setup && (
+        <form onSubmit={enable} className="flex flex-col gap-3 sm:flex-row sm:items-start">
+          <img src={setup.qr} alt="TOTP QR code" className="h-40 w-40 rounded-md bg-white p-1" />
+          <div className="flex-1 space-y-2">
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              1. Scan the QR code with your authenticator app (or enter the key manually):
+            </div>
+            <code className="block truncate rounded bg-slate-100 px-2 py-1 text-xs dark:bg-slate-950">{setup.secret}</code>
+            <div className="text-xs text-slate-500 dark:text-slate-400">2. Enter the 6-digit code it shows:</div>
+            <div className="flex gap-2">
+              <input
+                className="input max-w-[10rem] text-center tracking-widest"
+                inputMode="numeric"
+                placeholder="123456"
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                autoComplete="one-time-code"
+                required
+              />
+              <button type="submit" className="btn-primary shrink-0" disabled={busy || !code.trim()}>
+                Verify & enable
+              </button>
+              <button type="button" onClick={() => setSetup(null)} className="btn-secondary shrink-0">
+                Cancel
+              </button>
+            </div>
+          </div>
+        </form>
+      )}
+
+      {enabled && !showDisable && (
+        <button
+          onClick={() => {
+            setShowDisable(true);
+            setCode('');
+            setPassword('');
+          }}
+          className="inline-flex items-center gap-1 rounded-md border border-slate-300 px-2.5 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+        >
+          <ShieldOff className="h-3.5 w-3.5" /> Disable 2FA
+        </button>
+      )}
+
+      {enabled && showDisable && (
+        <form onSubmit={disable} className="flex flex-col gap-2 sm:flex-row">
+          <input
+            type="password"
+            className="input sm:max-w-[14rem]"
+            placeholder="Account password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            required
+          />
+          <input
+            className="input sm:max-w-[12rem]"
+            placeholder="Code or recovery code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            required
+          />
+          <button type="submit" className="btn-primary shrink-0" disabled={busy}>
+            Disable
+          </button>
+          <button type="button" onClick={() => setShowDisable(false)} className="btn-secondary shrink-0">
+            Cancel
+          </button>
+        </form>
       )}
     </div>
   );
@@ -329,6 +515,8 @@ export default function Profile() {
  {' · '}macOS Finder: <em>Go → Connect to Server</em>; Windows: <em>Map network drive</em>.
  </div>
  </div>
+
+ <TwoFactorCard />
 
  <SessionsCard />
 

@@ -1,6 +1,8 @@
 // I4 — client-side presence over a single shared WebSocket. Components subscribe
 // to a fileId via usePresence(); the manager ref-counts rooms, (re)connects, and
 // re-joins active rooms after reconnects.
+// Task5 #5 — the same socket also carries server-push events ('notification',
+// 'file-change'); subscribe via subscribeServerEvents().
 import { useEffect, useState } from 'react';
 import { useAuth } from '../store/auth.js';
 
@@ -8,6 +10,7 @@ let ws = null;
 let queue = [];
 const subs = new Map(); // fileId -> Set<callback>
 const refs = new Map(); // fileId -> count
+const eventSubs = new Set(); // callbacks for server-push events
 
 function wsUrl() {
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -43,11 +46,14 @@ function connect() {
     if (msg.type === 'presence') {
       const set = subs.get(msg.fileId);
       if (set) set.forEach((cb) => cb(msg.viewers || []));
+    } else {
+      // Server-push event (notification / file-change) — fan out to listeners.
+      eventSubs.forEach((cb) => cb(msg));
     }
   };
   ws.onclose = () => {
     ws = null;
-    if (refs.size) setTimeout(connect, 2000);
+    if (refs.size || eventSubs.size) setTimeout(connect, 2000);
   };
   ws.onerror = () => {
     try {
@@ -76,6 +82,16 @@ export function joinPresence(fileId, cb) {
     } else {
       refs.set(fileId, n);
     }
+  };
+}
+
+// Task5 #5 — listen for server-push events ({type:'notification'|'file-change'}).
+// Keeps the shared socket alive while at least one listener is registered.
+export function subscribeServerEvents(cb) {
+  eventSubs.add(cb);
+  connect();
+  return () => {
+    eventSubs.delete(cb);
   };
 }
 

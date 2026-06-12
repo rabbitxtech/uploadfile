@@ -497,6 +497,9 @@ export default function PreviewModal({ file, onClose, siblings = [], onNavigate 
               <div className="relative">
                 <VideoPlayer
                   src={inlineUrl}
+                  hlsSrc={
+                    file.hlsReady ? `${apiBase}/files/${file.id}/stream/hls/master.m3u8` : undefined
+                  }
                   name={file.name}
                   resumeKey={file.id}
                   subtitles={subtitles}

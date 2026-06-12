@@ -6,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import { env } from '../config/env.js';
 import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
+import { registerSocket, unregisterSocket } from './bus.js';
 
 export function attachPresence(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -44,6 +45,7 @@ export function attachPresence(server) {
   wss.on('connection', (ws) => {
     ws.rooms = new Set();
     ws.isAlive = true;
+    if (ws.user) registerSocket(ws.user.id, ws); // Task5 #5 — server push channel
     ws.on('pong', () => (ws.isAlive = true));
     ws.on('message', (data) => {
       let msg;
@@ -62,6 +64,7 @@ export function attachPresence(server) {
     });
     ws.on('close', () => {
       for (const f of [...ws.rooms]) leave(ws, f);
+      if (ws.user) unregisterSocket(ws.user.id, ws);
     });
     ws.on('error', () => {});
   });

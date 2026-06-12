@@ -17,6 +17,7 @@ import trashRoutes from './routes/trash.routes.js';
 import userRoutes from './routes/users.routes.js';
 import notificationRoutes from './routes/notifications.routes.js';
 import grantRoutes from './routes/grants.routes.js';
+import groupRoutes from './routes/groups.routes.js';
 import collectionRoutes from './routes/collections.routes.js';
 import webdavRoutes from './routes/webdav.routes.js';
 import keyRoutes from './routes/keys.routes.js';
@@ -81,6 +82,10 @@ export function buildApp() {
 
   app.get('/health', (_req, res) => res.json({ ok: true, ts: Date.now() }));
 
+  // Public client config / feature flags (no auth) — lets the SPA hide locked
+  // features instead of letting the user hit a 403.
+  app.get('/api/config', (_req, res) => res.json({ zipDownloadEnabled: env.zipDownloadEnabled }));
+
   // API docs (Swagger UI + raw OpenAPI JSON).
   app.get('/api/openapi.json', (_req, res) => res.json(openapiDocument));
   app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapiDocument, { customSiteTitle: 'Uploader API' }));
@@ -94,6 +99,7 @@ export function buildApp() {
   app.use('/api/users', userRoutes);
   app.use('/api/notifications', notificationRoutes);
   app.use('/api/grants', grantRoutes);
+  app.use('/api/groups', groupRoutes);
   app.use('/api/collections', collectionRoutes);
   app.use('/api/keys', keyRoutes);
   app.use('/api/audit', auditRoutes);

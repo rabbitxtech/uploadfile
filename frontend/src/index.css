@@ -61,11 +61,17 @@
 
 @layer base {
   html, body, #root { @apply h-full; }
+  html {
+    scroll-behavior: smooth;
+    -webkit-tap-highlight-color: transparent; /* no grey flash on tap (mobile) */
+  }
   /* Use raw values on body so a future utility override never leaks via @apply */
   body {
     background-color: rgb(248 250 252);  /* slate-50 */
     color: rgb(15 23 42);                /* slate-900 */
     @apply text-base antialiased;
+    /* Theme switch (light⇄dark) eases instead of snapping. */
+    transition: background-color 200ms ease, color 200ms ease;
   }
   .dark body {
     background-color: rgb(2 6 23);       /* slate-950 */
@@ -73,30 +79,44 @@
   }
   .dark h1, .dark h2, .dark h3, .dark h4 { color: rgb(248 250 252); }
 
-  /* Scrollbar polish in dark */
-  .dark ::-webkit-scrollbar { width: 10px; height: 10px; }
-  .dark ::-webkit-scrollbar-track { background: transparent; }
-  .dark ::-webkit-scrollbar-thumb {
-    background: rgb(51 65 85);           /* slate-700 */
+  /* Scrollbar polish — thin, rounded, low-contrast in both themes. */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(203 213 225);        /* slate-300 */
     border-radius: 999px;
     border: 2px solid transparent;
     background-clip: padding-box;
   }
-  .dark ::-webkit-scrollbar-thumb:hover {
-    background-color: rgb(71 85 105);    /* slate-600 */
-    background-clip: padding-box;
-  }
-  .dark ::-webkit-scrollbar-corner { background: transparent; }
+  ::-webkit-scrollbar-thumb:hover { background-color: rgb(148 163 184); background-clip: padding-box; } /* slate-400 */
+  ::-webkit-scrollbar-corner { background: transparent; }
+  .dark ::-webkit-scrollbar-thumb { background: rgb(51 65 85); background-clip: padding-box; } /* slate-700 */
+  .dark ::-webkit-scrollbar-thumb:hover { background-color: rgb(71 85 105); background-clip: padding-box; } /* slate-600 */
+  /* Firefox */
+  * { scrollbar-width: thin; scrollbar-color: rgb(203 213 225) transparent; }
+  .dark * { scrollbar-color: rgb(51 65 85) transparent; }
 
   ::selection { background: rgba(37, 99, 235, 0.25); }
   .dark ::selection { background: rgba(96, 165, 250, 0.4); color: rgb(248 250 252); }
+
+  /* Accessibility: honor the OS "reduce motion" setting — kill animations and
+     smooth-scroll for users who get motion sick. */
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 @layer components {
   .btn {
-    @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-all
-           focus:outline-none focus:ring-2 focus:ring-brand-500 focus:ring-offset-1 dark:focus:ring-offset-slate-950
-           disabled:cursor-not-allowed disabled:opacity-50;
+    @apply inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm font-medium transition-all duration-150 ease-smooth
+           transform-gpu active:scale-[0.97]
+           focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 focus-visible:ring-offset-1 dark:focus-visible:ring-offset-slate-950
+           disabled:cursor-not-allowed disabled:opacity-50 disabled:active:scale-100;
   }
   .btn-primary {
     @apply btn bg-brand-600 text-white shadow-sm
@@ -122,6 +142,12 @@
            dark:border-slate-800 dark:bg-slate-900
            dark:shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_10px_30px_-12px_rgba(0,0,0,0.5)];
   }
+  /* Opt-in lift for clickable cards (collections, stat tiles, etc.). */
+  .card-interactive {
+    @apply card cursor-pointer transition-all duration-200 ease-smooth
+           hover:-translate-y-0.5 hover:border-brand-300 hover:shadow-lg
+           dark:hover:border-brand-500/40;
+  }
   .select {
     @apply w-full appearance-none rounded-md border border-slate-300 bg-white py-2 pl-3 pr-9 text-sm text-slate-700 shadow-sm transition-colors
            focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/40
@@ -143,7 +169,7 @@
   }
   .badge { @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium; }
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700
+    @apply inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-700 transition-colors
            dark:bg-slate-800 dark:text-slate-200;
   }
   .chip-removable { @apply chip hover:bg-slate-200 dark:hover:bg-slate-700; }
@@ -152,9 +178,32 @@
            dark:bg-slate-900/60 dark:text-slate-400;
   }
   .table-divider { @apply divide-y divide-slate-100 dark:divide-slate-800; }
-  .table-row { @apply hover:bg-slate-50 dark:hover:bg-slate-800/40; }
+  .table-row { @apply transition-colors duration-150 hover:bg-slate-50 dark:hover:bg-slate-800/40; }
   .muted { @apply text-slate-500 dark:text-slate-400; }
   .muted-strong { @apply text-slate-600 dark:text-slate-300; }
+
+  /* Skeleton placeholder: a soft shimmering block to show while data loads,
+     instead of a blank gap or a spinner. */
+  .skeleton {
+    @apply rounded-md bg-slate-200/70 dark:bg-slate-800/70;
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.45) 50%,
+      transparent 100%
+    );
+    background-size: 200% 100%;
+    background-repeat: no-repeat;
+    @apply animate-shimmer;
+  }
+  .dark .skeleton {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgba(255, 255, 255, 0.06) 50%,
+      transparent 100%
+    );
+  }
 }
 
 /* Active nav glow — visible accent on dark */

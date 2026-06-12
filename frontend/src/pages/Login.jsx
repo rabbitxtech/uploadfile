@@ -11,6 +11,8 @@ export default function Login() {
  const [loading, setLoading] = useState(false);
  const [unverified, setUnverified] = useState(false); // login blocked: email not verified
  const [resending, setResending] = useState(false);
+ const [tmpToken, setTmpToken] = useState(null); // 2FA: intermediate login token
+ const [code, setCode] = useState('');
  const setSession = useAuth((s) => s.setSession);
  const navigate = useNavigate();
 
@@ -20,6 +22,11 @@ export default function Login() {
  setUnverified(false);
  try {
  const data = await AuthApi.login({ email, password });
+ if (data.requires2fa) {
+ setTmpToken(data.tmpToken);
+ setCode('');
+ return;
+ }
  setSession(data);
  toast.success('Welcome back');
  navigate('/files');
@@ -33,6 +40,61 @@ export default function Login() {
  setLoading(false);
  }
  };
+
+ const submitCode = async (e) => {
+ e.preventDefault();
+ setLoading(true);
+ try {
+ const data = await AuthApi.totpVerify(tmpToken, code.trim());
+ setSession(data);
+ toast.success('Welcome back');
+ navigate('/files');
+ } catch (e) {
+ const msg = e.response?.data?.error || 'Verification failed';
+ toast.error(msg);
+ // The 5-minute intermediate token expired → back to the password step.
+ if (/expired/i.test(msg)) setTmpToken(null);
+ } finally {
+ setLoading(false);
+ }
+ };
+
+ if (tmpToken) {
+ return (
+ <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
+ <form onSubmit={submitCode} className="card w-full max-w-sm p-6">
+ <div className="mb-2 flex items-center gap-2 text-brand-700 dark:text-brand-400">
+ <Cloud className="h-7 w-7" />
+ <span className="text-xl font-semibold">Two-factor code</span>
+ </div>
+ <p className="mb-4 text-sm text-slate-500 dark:text-slate-400">
+ Enter the 6-digit code from your authenticator app, or one of your recovery codes.
+ </p>
+ <input
+ type="text"
+ inputMode="numeric"
+ placeholder="123456"
+ required
+ autoFocus
+ autoComplete="one-time-code"
+ className="input text-center text-lg tracking-widest"
+ value={code}
+ onChange={(e) => setCode(e.target.value)}
+ />
+ <button type="submit" disabled={loading || !code.trim()} className="btn-primary mt-4 w-full justify-center">
+ {loading ? 'Verifying...' : 'Verify'}
+ </button>
+ <button
+ type="button"
+ onClick={() => setTmpToken(null)}
+ className="mt-3 w-full text-center text-sm text-slate-500 hover:underline dark:text-slate-400"
+ >
+ Back to sign in
+ </button>
+ </form>
+ </div>
+ );
+ }
 
  const resend = async () => {
  setResending(true);

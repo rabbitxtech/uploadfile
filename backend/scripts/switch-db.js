@@ -13,7 +13,20 @@ if (!allowed.includes(target)) {
 
 const schemaPath = resolve(process.cwd(), 'prisma/schema.prisma');
 const src = readFileSync(schemaPath, 'utf8');
-const next = src.replace(/provider\s*=\s*"(postgresql|mysql|sqlite)"/, `provider = "${target}"`);
+let next = src.replace(/provider\s*=\s*"(postgresql|mysql|sqlite)"/, `provider = "${target}"`);
+
+// Lines tagged `///pg-only` (e.g. the pgvector Unsupported("vector(384)")
+// column, Task5 #12) are valid only on PostgreSQL — comment them out when
+// switching to mysql/sqlite, uncomment when switching back.
+next = next
+  .split('\n')
+  .map((line) => {
+    if (!line.includes('///pg-only')) return line;
+    if (target === 'postgresql') return line.replace(/^(\s*)\/\/ (?=\S)/, '$1');
+    if (/^\s*\/\/ /.test(line)) return line; // already commented out
+    return line.replace(/^(\s*)(?=\S)/, '$1// ');
+  })
+  .join('\n');
 
 if (src === next) {
   console.log(`schema.prisma already uses ${target}`);
