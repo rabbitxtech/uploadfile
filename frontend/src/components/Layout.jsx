@@ -179,8 +179,8 @@ export default function Layout() {
  );
 
  const sidebar = (
- <aside className="flex h-full w-64 flex-col gap-2 border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
- <div className="flex items-center gap-2 px-2 py-2">
+ <aside className="flex h-full w-64 flex-col gap-2 overflow-hidden border-r border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3">
+ <div className="flex shrink-0 items-center gap-2 px-2 py-2">
  <div className="flex items-center gap-2 text-brand-700 dark:text-brand-400">
  <Cloud className="h-6 w-6" />
  <span className="text-lg font-semibold">Uploader</span>
@@ -198,13 +198,13 @@ export default function Layout() {
  </div>
  <button
  onClick={() => setPaletteOpen(true)}
- className="mb-1 flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
+ className="mb-1 flex shrink-0 items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
  >
  <Command className="h-4 w-4" />
  <span className="flex-1 text-left">{t('nav.quickSearch')}</span>
  <kbd className="rounded border border-slate-300 px-1 text-[10px] dark:border-slate-600">⌘K</kbd>
  </button>
- <nav className="flex flex-col gap-1">
+ <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
  <Item to="/files" icon={Files}>
  {t('nav.myFiles')}
  </Item>
@@ -247,7 +247,7 @@ export default function Layout() {
  )}
  </nav>
 
- <div className="mt-auto rounded-md border border-slate-200 dark:border-slate-800 p-3 text-xs">
+ <div className="shrink-0 rounded-md border border-slate-200 dark:border-slate-800 p-3 text-xs">
  <div className="mb-1 truncate font-medium text-slate-700 dark:text-slate-200">
  {user?.email}
  </div>
