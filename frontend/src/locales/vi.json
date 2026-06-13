@@ -81,6 +81,7 @@
     "listView": "Dạng danh sách",
     "gridView": "Dạng lưới",
     "selectedCount": "Đã chọn {{count}}",
+    "selectAll": "Chọn tất cả",
     "downloadZip": "Tải ZIP",
     "rename": "Đổi tên",
     "addToCollection": "Thêm vào bộ sưu tập",

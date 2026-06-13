@@ -487,6 +487,28 @@ export default function Files() {
  const trail = useMemo(() => breadcrumbQuery.data?.trail || [], [breadcrumbQuery.data]);
  const hasSelection = selected.files.size > 0 || selected.folders.size > 0;
  const selectedFiles = sortedFiles.filter((f) => selected.files.has(f.id));
+
+ // Select-all over the currently loaded rows (pagination appends, so "all"
+ // means everything fetched so far — consistent with how bulk ops work). Grid
+ // view only renders files (no folders), so its universe is files only.
+ const gridMode = view === 'grid';
+ const totalRows = gridMode ? sortedFiles.length : sortedFolders.length + sortedFiles.length;
+ const allSelected =
+ totalRows > 0 &&
+ selected.files.size === sortedFiles.length &&
+ selected.folders.size === (gridMode ? 0 : sortedFolders.length);
+ const someSelected = hasSelection && !allSelected;
+ const toggleSelectAll = () => {
+ if (allSelected) {
+ clearSel();
+ } else {
+ setSelected({
+ files: new Set(sortedFiles.map((f) => f.id)),
+ folders: gridMode ? new Set() : new Set(sortedFolders.map((f) => f.id)),
+ });
+ }
+ lastIdxRef.current = null;
+ };
  const imageRatio = data.files.length
  ? data.files.filter((f) => f.mimeType?.startsWith('image/')).length / data.files.length
  : 0;
@@ -769,11 +791,24 @@ export default function Files() {
  {debouncedQ || tagFilter ? t('files.noMatches') : t('files.noFiles')}
  </div>
  ) : (
+ <>
+ <label className="mb-2 inline-flex cursor-pointer items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+ <input
+ type="checkbox"
+ checked={allSelected}
+ ref={(el) => {
+ if (el) el.indeterminate = someSelected;
+ }}
+ onChange={toggleSelectAll}
+ />
+ {t('files.selectAll')}
+ </label>
  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
  {sortedFiles.map((file) => (
  <ImageCard key={file.id} file={file} onPreview={setPreview} />
  ))}
  </div>
+ </>
  )}
  {loadMoreFooter}
  <div ref={sentinelRef} aria-hidden="true" className="h-px w-full" />
@@ -783,7 +818,19 @@ export default function Files() {
  <table className="w-full min-w-[600px] text-sm">
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
- <th className="px-3 py-2 w-8"></th>
+ <th className="px-3 py-2 w-8">
+ <input
+ type="checkbox"
+ aria-label={t('files.selectAll')}
+ title={t('files.selectAll')}
+ checked={allSelected}
+ ref={(el) => {
+ if (el) el.indeterminate = someSelected;
+ }}
+ onChange={toggleSelectAll}
+ disabled={!totalRows}
+ />
+ </th>
  <SortHeader label={t('files.sort.name')} sortKey="name" sort={sort} onSort={applySort} />
  <SortHeader label={t('files.sort.type')} sortKey="type" sort={sort} onSort={applySort} />
  <SortHeader label={t('files.sort.size')} sortKey="size" sort={sort} onSort={applySort} />

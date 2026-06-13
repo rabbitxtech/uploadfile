@@ -81,6 +81,7 @@
     "listView": "List view",
     "gridView": "Grid view",
     "selectedCount": "{{count}} selected",
+    "selectAll": "Select all",
     "downloadZip": "Download zip",
     "rename": "Rename",
     "addToCollection": "Add to collection",
