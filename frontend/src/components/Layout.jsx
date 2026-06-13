@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
+import '../lib/i18n.js'; // ensure i18next is initialized even when Layout is mounted in isolation (tests)
 import {
  Files,
  Trash2,
@@ -56,6 +58,7 @@ function Item({ to, icon: Icon, children, onClick }) {
 }
 
 export default function Layout() {
+ const { t } = useTranslation();
  const { user, logout } = useAuth();
  const { theme, toggle: toggleTheme } = useTheme();
  const navigate = useNavigate();
@@ -139,10 +142,10 @@ export default function Layout() {
  const handleDropFileOnFolder = async (fileId, folderId) => {
  try {
  await FileApi.update(fileId, { folderId });
- toast.success('Moved');
+ toast.success(t('common.moved'));
  qc.invalidateQueries({ queryKey: ['folders'] });
  } catch (e) {
- toast.error(e.response?.data?.error || 'Move failed');
+ toast.error(e.response?.data?.error || t('common.moveFailed'));
  }
  };
 
@@ -150,13 +153,13 @@ export default function Layout() {
  <>
  <div className="mb-1 flex items-center justify-between px-2">
  <span className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
- Folders
+ {t('nav.folders')}
  </span>
  <button
  onClick={onClose}
  className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
- title="Hide folders"
- aria-label="Hide folders"
+ title={t('nav.hideFolders')}
+ aria-label={t('nav.hideFolders')}
  >
  <CloseIcon className="h-4 w-4" />
  </button>
@@ -184,7 +187,7 @@ export default function Layout() {
  <button
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 md:hidden"
  onClick={() => setMobileOpen(false)}
- aria-label="Close menu"
+ aria-label={t('nav.closeMenu')}
  >
  <X className="h-5 w-5" />
  </button>
@@ -195,48 +198,48 @@ export default function Layout() {
  className="mb-1 flex items-center gap-2 rounded-md border border-slate-200 px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-400 dark:hover:bg-slate-800"
  >
  <Command className="h-4 w-4" />
- <span className="flex-1 text-left">Quick search…</span>
+ <span className="flex-1 text-left">{t('nav.quickSearch')}</span>
  <kbd className="rounded border border-slate-300 px-1 text-[10px] dark:border-slate-600">⌘K</kbd>
  </button>
  <nav className="flex flex-col gap-1">
  <Item to="/files" icon={Files}>
- My files
+ {t('nav.myFiles')}
  </Item>
  <Item to="/recent" icon={Clock}>
- Recent
+ {t('nav.recent')}
  </Item>
  <Item to="/starred" icon={Star}>
- Starred
+ {t('nav.starred')}
  </Item>
  <Item to="/collections" icon={Layers}>
- Collections
+ {t('nav.collections')}
  </Item>
  <Item to="/stats" icon={BarChart3}>
- Storage
+ {t('nav.storage')}
  </Item>
  <Item to="/duplicates" icon={Copy}>
- Duplicates
+ {t('nav.duplicates')}
  </Item>
  <Item to="/shared-with-me" icon={Users2}>
- Shared with me
+ {t('nav.sharedWithMe')}
  </Item>
  <Item to="/shares" icon={Share2}>
- My share links
+ {t('nav.myShareLinks')}
  </Item>
  <Item to="/trash" icon={Trash2}>
- Trash
+ {t('nav.trash')}
  </Item>
  <Item to="/profile" icon={User}>
- Profile
+ {t('nav.profile')}
  </Item>
  {user?.role === 'admin' && (
  <Item to="/users" icon={UsersIcon}>
- Users
+ {t('nav.users')}
  </Item>
  )}
  {user?.role === 'admin' && (
  <Item to="/audit" icon={ShieldAlert}>
- Audit log
+ {t('nav.auditLog')}
  </Item>
  )}
  </nav>
@@ -261,13 +264,13 @@ export default function Layout() {
  navigate('/login');
  }}
  >
- <LogOut className="h-3.5 w-3.5" /> Sign out
+ <LogOut className="h-3.5 w-3.5" /> {t('nav.signOut')}
  </button>
  <button
  className="rounded-md border border-slate-300 dark:border-slate-700 p-1.5 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
  onClick={toggleTheme}
- aria-label="Toggle theme"
- title="Toggle theme"
+ aria-label={t('nav.toggleTheme')}
+ title={t('nav.toggleTheme')}
  >
  {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
  </button>
@@ -286,8 +289,8 @@ export default function Layout() {
  <button
  onClick={() => setTreeOpen(true)}
  className="absolute right-0 top-1/2 z-10 flex h-7 w-7 -translate-y-1/2 translate-x-1/2 items-center justify-center rounded-full border border-slate-300 bg-white text-slate-500 shadow-md hover:bg-slate-100 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
- title="Show folders"
- aria-label="Show folders"
+ title={t('nav.showFolders')}
+ aria-label={t('nav.showFolders')}
  >
  <ChevronRight className="h-4 w-4" />
  </button>
@@ -337,7 +340,7 @@ export default function Layout() {
  <button
  className="rounded p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
  onClick={() => setMobileOpen(true)}
- aria-label="Open menu"
+ aria-label={t('nav.openMenu')}
  >
  <Menu className="h-5 w-5" />
  </button>
@@ -345,8 +348,8 @@ export default function Layout() {
  <button
  className="rounded p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
  onClick={() => setMobileTreeOpen(true)}
- aria-label="Show folders"
- title="Folders"
+ aria-label={t('nav.showFolders')}
+ title={t('nav.folders')}
  >
  <FolderTreeIcon className="h-5 w-5" />
  </button>
@@ -360,7 +363,7 @@ export default function Layout() {
  <button
  className="rounded p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
  onClick={toggleTheme}
- aria-label="Toggle theme"
+ aria-label={t('nav.toggleTheme')}
  >
  {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
  </button>
@@ -374,7 +377,7 @@ export default function Layout() {
  <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} />
  {!online && (
  <div className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-2 rounded-full border border-amber-300 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800 shadow-lg dark:border-amber-500/40 dark:bg-amber-500/15 dark:text-amber-200">
- <WifiOff className="h-3.5 w-3.5" /> Offline — uploads will be queued and sent when you reconnect
+ <WifiOff className="h-3.5 w-3.5" /> {t('nav.offline')}
  </div>
  )}
  </div>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useInfiniteQuery, useQueryClient, useMutation } from '@tanstack/react-query';
 import { useWindowVirtualizer } from '@tanstack/react-virtual';
+import { useTranslation, Trans } from 'react-i18next';
 import {
  FolderPlus,
  ChevronRight,
@@ -44,7 +45,7 @@ import ActionMenu from '../components/ActionMenu.jsx';
 // meaningful size/type, so those keys fall back to name for folders.
 // Task5 #20: only used for search results now — the folder listing arrives
 // pre-sorted from the server (sort key/dir ride along with the cursor).
-const SORT_LABELS = { name: 'Name', type: 'Type', size: 'Size', modified: 'Modified' };
+const SORT_KEYS = ['name', 'type', 'size', 'modified'];
 function sortList(items, key, dir, isFolder) {
  const mul = dir === 'asc' ? 1 : -1;
  const byName = (a, b) => (a.name || '').localeCompare(b.name || '', undefined, { numeric: true });
@@ -145,6 +146,7 @@ function ImageCard({ file, onPreview }) {
 }
 
 export default function Files() {
+ const { t } = useTranslation();
  const { folderId } = useParams();
  const navigate = useNavigate();
  const qc = useQueryClient();
@@ -317,10 +319,10 @@ export default function Files() {
 
  const onNewFolder = async () => {
  const name = await promptDialog({
- title: 'New folder',
- message: 'Choose a name for the new folder.',
- placeholder: 'e.g. Documents',
- confirmText: 'Create',
+ title: t('files.newFolderTitle'),
+ message: t('files.newFolderMessage'),
+ placeholder: t('files.newFolderPlaceholder'),
+ confirmText: t('common.create'),
  });
  if (!name) return;
  createFolder.mutate(name);
@@ -328,17 +330,17 @@ export default function Files() {
 
  const onUploadFromUrl = async () => {
  const url = await promptDialog({
- title: 'Upload from URL',
- message: 'Paste a direct link — the server downloads it into this folder.',
- placeholder: 'https://example.com/file.pdf',
- confirmText: 'Fetch',
+ title: t('files.fromUrlTitle'),
+ message: t('files.fromUrlMessage'),
+ placeholder: t('files.fromUrlPlaceholder'),
+ confirmText: t('files.fetch'),
  });
  if (!url) return;
  try {
  await toast.promise(FileApi.fromUrl(url.trim(), folderId || null), {
- loading: 'Fetching…',
- success: 'Saved to your files',
- error: (e) => e.response?.data?.error || 'Fetch failed',
+ loading: t('files.fetching'),
+ success: t('files.savedToFiles'),
+ error: (e) => e.response?.data?.error || t('files.fetchFailed'),
  });
  qc.invalidateQueries({ queryKey: ['folders'] });
  refreshUser();
@@ -349,14 +351,13 @@ export default function Files() {
 
  const onImportYoutube = async () => {
  const url = await promptDialog({
- title: 'Import video from URL',
- message:
- 'Paste a link from a supported source (YouTube, Vimeo, Dailymotion, TED, Internet Archive, Wikimedia, SoundCloud, X, Facebook, Instagram, Reddit, Twitch). The server downloads the best-quality video into this folder. Long videos can take several minutes.',
- placeholder: 'https://… (YouTube, Vimeo, Dailymotion, TED…)',
- confirmText: 'Import',
+ title: t('files.importVideoTitle'),
+ message: t('files.importVideoMessage'),
+ placeholder: t('files.importVideoPlaceholder'),
+ confirmText: t('files.import'),
  });
  if (!url) return;
- const id = toast.loading('Preparing YouTube download…');
+ const id = toast.loading(t('files.preparingDownload'));
  try {
  await FileApi.fromYoutube(url.trim(), folderId || null, (evt) => {
  if (evt.type === 'progress') {
@@ -367,23 +368,23 @@ export default function Files() {
  const extra = [!bad(speed) && speed, !bad(eta) && `ETA ${eta}`]
  .filter(Boolean)
  .join(' · ');
- toast.loading(`Downloading from YouTube… ${pct}${extra ? ` (${extra})` : ''}`, { id });
+ toast.loading(`${t('files.downloadingFrom')} ${pct}${extra ? ` (${extra})` : ''}`, { id });
  } else if (evt.type === 'status') {
  const label =
  evt.status === 'merging'
- ? 'Merging video + audio…'
+ ? t('files.mergingAudio')
  : evt.status === 'uploading'
- ? 'Saving to your files…'
- : 'Downloading from YouTube…';
+ ? t('files.savingToFiles')
+ : t('files.downloadingFrom');
  toast.loading(label, { id });
  }
  });
- toast.success('Video saved to your files', { id });
+ toast.success(t('files.videoSaved'), { id });
  qc.invalidateQueries({ queryKey: ['folders'] });
  qc.invalidateQueries({ queryKey: ['file-recent'] });
  refreshUser();
  } catch (e) {
- toast.error(e.message || 'Import failed', { id });
+ toast.error(e.message || t('files.importFailed'), { id });
  }
  };
 
@@ -401,7 +402,7 @@ export default function Files() {
  qc.invalidateQueries({ queryKey: ['folders'] });
  qc.invalidateQueries({ queryKey: ['search'] });
  } catch (e) {
- toast.error(e.response?.data?.error || 'Rename failed');
+ toast.error(e.response?.data?.error || t('common.renameFailed'));
  }
  };
  const submitRenameFolder = async (folder, name) => {
@@ -411,17 +412,17 @@ export default function Files() {
  qc.invalidateQueries({ queryKey: ['breadcrumb'] });
  qc.invalidateQueries({ queryKey: ['folder-tree'] });
  } catch (e) {
- toast.error(e.response?.data?.error || 'Rename failed');
+ toast.error(e.response?.data?.error || t('common.renameFailed'));
  }
  };
 
  const moveFileTo = async (fileId, targetFolderId) => {
  try {
  await FileApi.update(fileId, { folderId: targetFolderId });
- toast.success('Moved');
+ toast.success(t('common.moved'));
  qc.invalidateQueries({ queryKey: ['folders'] });
  } catch (e) {
- toast.error(e.response?.data?.error || 'Move failed');
+ toast.error(e.response?.data?.error || t('common.moveFailed'));
  }
  };
 
@@ -573,23 +574,23 @@ export default function Files() {
  // M2 — Undo toast restores the just-trashed items.
  const n = fileIds.length + folderIds.length;
  toast(
- (t) => (
+ (to) => (
  <span className="flex items-center gap-3">
- Moved {n} item{n === 1 ? '' : 's'} to trash
+ {t('files.movedToTrash', { count: n })}
  <button
  className="font-semibold text-brand-600 hover:underline dark:text-brand-400"
  onClick={async () => {
- toast.dismiss(t.id);
+ toast.dismiss(to.id);
  try {
  await TrashApi.restore({ fileIds, folderIds });
  refreshAfterTrash();
- toast.success('Restored');
+ toast.success(t('files.restored'));
  } catch {
- toast.error('Undo failed');
+ toast.error(t('files.undoFailed'));
  }
  }}
  >
- Undo
+ {t('files.undo')}
  </button>
  </span>
  ),
@@ -617,15 +618,16 @@ export default function Files() {
  !searchActive && (hasNextPage || isFetchingNextPage) ? (
  <div className="flex items-center justify-center gap-3 px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
  <span>
- Loaded {sortedFiles.length}
- {listTotal != null ? ` of ${listTotal}` : ''} files
+ {listTotal != null
+ ? t('files.loadedOf', { loaded: sortedFiles.length, total: listTotal })
+ : t('files.loaded', { loaded: sortedFiles.length })}
  </span>
  <button
  className="font-medium text-brand-600 hover:underline disabled:opacity-50 dark:text-brand-400"
  onClick={() => fetchNextPage()}
  disabled={isFetchingNextPage}
  >
- {isFetchingNextPage ? 'Loading…' : 'Load more'}
+ {isFetchingNextPage ? t('common.loading') : t('files.loadMore')}
  </button>
  </div>
  ) : null;
@@ -636,23 +638,23 @@ export default function Files() {
  <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-3 py-2 text-sm">
  <Eye className="h-4 w-4 text-amber-700 dark:text-amber-300" />
  <span className="text-amber-800 dark:text-amber-300">
- Managing files of{' '}
+ {t('files.managingFilesOf')}{' '}
  <strong>
  {viewedUserQuery.data?.name || viewedUserQuery.data?.email || asUserId}
  </strong>{' '}
- (admin — full access)
+ {t('files.adminFullAccess')}
  </span>
  <Link
  to={`/trash?as=${asUserId}`}
  className="ml-auto rounded px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-500/20"
  >
- View trash
+ {t('files.viewTrash')}
  </Link>
  <Link
  to="/files"
  className="rounded px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-500/20"
  >
- Exit
+ {t('files.exit')}
  </Link>
  </div>
  )}
@@ -661,13 +663,13 @@ export default function Files() {
  onClick={() => navigate(`/files${qs}`)}
  className="flex items-center gap-1 hover:underline"
  >
- <Home className="h-4 w-4" /> Home
+ <Home className="h-4 w-4" /> {t('files.home')}
  </button>
- {trail.map((t) => (
- <span key={t.id} className="flex items-center gap-1">
+ {trail.map((crumb) => (
+ <span key={crumb.id} className="flex items-center gap-1">
  <ChevronRight className="h-3.5 w-3.5 text-slate-400 dark:text-slate-500" />
- <button onClick={() => navigate(`/files/${t.id}${qs}`)} className="hover:underline">
- {t.name}
+ <button onClick={() => navigate(`/files/${crumb.id}${qs}`)} className="hover:underline">
+ {crumb.name}
  </button>
  </span>
  ))}
@@ -678,7 +680,7 @@ export default function Files() {
  <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400 dark:text-slate-500" />
  <input
  className="input pl-8"
- placeholder={semantic ? 'Search by meaning…' : 'Search files...'}
+ placeholder={semantic ? t('files.searchByMeaning') : t('files.searchFiles')}
  value={search}
  onChange={(e) => setSearch(e.target.value)}
  />
@@ -691,14 +693,14 @@ export default function Files() {
  ? 'border-brand-500 bg-brand-50 text-brand-700 dark:bg-brand-500/15 dark:text-brand-300'
  : 'border-slate-300 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:hover:bg-slate-800')
  }
- title="Semantic search — find files by meaning (AI)"
+ title={t('files.semanticTitle')}
  >
- <Sparkles className="h-3.5 w-3.5" /> Semantic
+ <Sparkles className="h-3.5 w-3.5" /> {t('files.semantic')}
  </button>
  {tagFilter && (
  <span className="chip-removable">
  <TagIcon className="h-3 w-3" />
- tag: {tagFilter}
+ {t('files.tagPrefix')} {tagFilter}
  <button onClick={() => setTagFilter('')} className="hover:text-red-600">
  <X className="h-3 w-3" />
  </button>
@@ -709,13 +711,13 @@ export default function Files() {
  variant="button"
  icon={Plus}
  align="left"
- label="Add new"
+ label={t('files.addNew')}
  items={[
- { label: 'Upload files', icon: Upload, hidden: !canUpload, onClick: () => uploaderRef.current?.pick() },
- { label: 'Take photo', icon: Camera, hidden: !canUpload, onClick: () => uploaderRef.current?.capture() },
- { label: 'From URL', icon: Link2, hidden: !canUpload, onClick: onUploadFromUrl },
- { label: 'Import video (URL)', icon: Film, hidden: !canUpload, onClick: onImportYoutube },
- { label: 'New folder', icon: FolderPlus, onClick: onNewFolder },
+ { label: t('files.uploadFiles'), icon: Upload, hidden: !canUpload, onClick: () => uploaderRef.current?.pick() },
+ { label: t('files.takePhoto'), icon: Camera, hidden: !canUpload, onClick: () => uploaderRef.current?.capture() },
+ { label: t('files.fromUrl'), icon: Link2, hidden: !canUpload, onClick: onUploadFromUrl },
+ { label: t('files.importVideo'), icon: Film, hidden: !canUpload, onClick: onImportYoutube },
+ { label: t('files.newFolder'), icon: FolderPlus, onClick: onNewFolder },
  ]}
  />
  )}
@@ -724,18 +726,18 @@ export default function Files() {
  className="bg-transparent py-1.5 text-xs text-slate-600 focus:outline-none dark:text-slate-300"
  value={sort.key}
  onChange={(e) => applySort(e.target.value)}
- title="Sort by"
+ title={t('files.sortBy')}
  >
- {Object.entries(SORT_LABELS).map(([k, label]) => (
+ {SORT_KEYS.map((k) => (
  <option key={k} value={k} className="dark:bg-slate-800">
- {label}
+ {t(`files.sort.${k}`)}
  </option>
  ))}
  </select>
  <button
  onClick={() => applySort(sort.key)}
  className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800"
- title={sort.dir === 'asc' ? 'Ascending' : 'Descending'}
+ title={sort.dir === 'asc' ? t('files.ascending') : t('files.descending')}
  >
  {sort.dir === 'asc' ? <ArrowUp className="h-3.5 w-3.5" /> : <ArrowDown className="h-3.5 w-3.5" />}
  </button>
@@ -749,7 +751,7 @@ export default function Files() {
  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800')
  }
  onClick={() => setView('list')}
- title="List view"
+ title={t('files.listView')}
  >
  <List className="h-4 w-4" />
  </button>
@@ -761,7 +763,7 @@ export default function Files() {
  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800')
  }
  onClick={() => setView('grid')}
- title="Grid view"
+ title={t('files.gridView')}
  >
  <LayoutGrid className="h-4 w-4" />
  </button>
@@ -769,25 +771,25 @@ export default function Files() {
  {hasSelection && (
  <>
  <span className="text-sm text-slate-500 dark:text-slate-400">
- {selected.files.size + selected.folders.size} selected
+ {t('files.selectedCount', { count: selected.files.size + selected.folders.size })}
  </span>
  {zipEnabled && (
  <button className="btn-secondary" onClick={bulkZip} disabled={!selected.files.size}>
- <Download className="h-4 w-4" /> Download zip
+ <Download className="h-4 w-4" /> {t('files.downloadZip')}
  </button>
  )}
  {!viewingAs && (
  <>
  <button className="btn-secondary" onClick={() => setBulkRenameOpen(true)} disabled={!selected.files.size}>
- <Wand2 className="h-4 w-4" /> Rename
+ <Wand2 className="h-4 w-4" /> {t('files.rename')}
  </button>
  <button className="btn-secondary" onClick={() => setAddToColOpen(true)} disabled={!selected.files.size}>
- <Layers className="h-4 w-4" /> Add to collection
+ <Layers className="h-4 w-4" /> {t('files.addToCollection')}
  </button>
  </>
  )}
  <button className="btn-danger" onClick={bulkTrash}>
- <Trash2 className="h-4 w-4" /> Trash
+ <Trash2 className="h-4 w-4" /> {t('nav.trash')}
  </button>
  </>
  )}
@@ -796,9 +798,9 @@ export default function Files() {
  {showGridSuggestion && view === 'list' && (
  <div className="mb-3 flex items-center gap-2 rounded-md bg-brand-50 dark:bg-brand-500/10 px-3 py-2 text-xs text-brand-800 dark:text-brand-300">
  <LayoutGrid className="h-4 w-4" />
- Mostly images here —{' '}
+ {t('files.mostlyImages')}{' '}
  <button onClick={() => setView('grid')} className="font-medium underline">
- switch to grid view
+ {t('files.switchToGrid')}
  </button>
  </div>
  )}
@@ -806,7 +808,7 @@ export default function Files() {
  {!viewingAs && !canUpload && (
  <div className="mb-4 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
  <span className="text-amber-800 dark:text-amber-300">
- ⏳ Your account is <strong>pending administrator approval</strong>. You can browse, but you can't upload files until an admin approves your account.
+ <Trans i18nKey="files.pendingApproval"><strong>pending</strong></Trans>
  </span>
  </div>
  )}
@@ -829,7 +831,7 @@ export default function Files() {
  <div ref={gridWrapRef}>
  {sortedFiles.length === 0 ? (
  <div className="py-12 text-center text-slate-500 dark:text-slate-400">
- {debouncedQ || tagFilter ? 'No matches' : 'No files'}
+ {debouncedQ || tagFilter ? t('files.noMatches') : t('files.noFiles')}
  </div>
  ) : (
  <div className="relative" style={{ height: gridVirtualizer.getTotalSize() }}>
@@ -861,10 +863,10 @@ export default function Files() {
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
  <th className="px-3 py-2 w-8"></th>
- <SortHeader label="Name" sortKey="name" sort={sort} onSort={applySort} />
- <SortHeader label="Type" sortKey="type" sort={sort} onSort={applySort} />
- <SortHeader label="Size" sortKey="size" sort={sort} onSort={applySort} />
- <SortHeader label="Modified" sortKey="modified" sort={sort} onSort={applySort} />
+ <SortHeader label={t('files.sort.name')} sortKey="name" sort={sort} onSort={applySort} />
+ <SortHeader label={t('files.sort.type')} sortKey="type" sort={sort} onSort={applySort} />
+ <SortHeader label={t('files.sort.size')} sortKey="size" sort={sort} onSort={applySort} />
+ <SortHeader label={t('files.sort.modified')} sortKey="modified" sort={sort} onSort={applySort} />
  <th className="px-3 py-2"></th>
  </tr>
  </thead>
@@ -929,9 +931,7 @@ export default function Files() {
  {!tableRows.length && (
  <tr>
  <td colSpan={6} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
- {debouncedQ || tagFilter
- ? 'No matches'
- : 'Empty folder — drop files anywhere on this page to upload'}
+ {debouncedQ || tagFilter ? t('files.noMatches') : t('files.emptyFolder')}
  </td>
  </tr>
  )}

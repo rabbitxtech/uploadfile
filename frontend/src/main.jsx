@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Toaster } from 'react-hot-toast';
 import App from './App.jsx';
 import { DialogHost } from './components/Dialog.jsx';
+import './lib/i18n.js'; // Task5 #22 — initialize i18next before render
 import './index.css';
 
 const queryClient = new QueryClient({
