@@ -405,11 +405,13 @@ export function FileRow({
  </div>
  </div>
  </td>
- <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{file.mimeType}</td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+ <span className="block max-w-[160px] truncate" title={file.mimeType}>{file.mimeType}</span>
+ </td>
+ <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
  {formatBytes(file.size)}
  </td>
- <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
+ <td className="whitespace-nowrap px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
  {formatDate(file.updatedAt)}
  </td>
  <td className="px-3 py-2 text-right">

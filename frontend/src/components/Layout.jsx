@@ -204,7 +204,7 @@ export default function Layout() {
  <span className="flex-1 text-left">{t('nav.quickSearch')}</span>
  <kbd className="rounded border border-slate-300 px-1 text-[10px] dark:border-slate-600">⌘K</kbd>
  </button>
- <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto">
+ <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto overflow-x-hidden">
  <Item to="/files" icon={Files}>
  {t('nav.myFiles')}
  </Item>

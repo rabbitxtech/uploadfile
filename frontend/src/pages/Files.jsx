@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams, Link } from 'react-router-dom';
 import { useQuery, useInfiniteQuery, useQueryClient, useMutation } from '@tanstack/react-query';
-import { useWindowVirtualizer } from '@tanstack/react-virtual';
 import { useTranslation, Trans } from 'react-i18next';
 import {
  FolderPlus,
@@ -82,21 +81,6 @@ function SortHeader({ label, sortKey, sort, onSort }) {
  </button>
  </th>
  );
-}
-
-// Task5 #20 — column count for the virtualized grid; mirrors the old
-// `grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6` breakpoints
-// (Tailwind breakpoints are viewport-based, so window width is the right input).
-function useGridCols() {
- const calc = () =>
-  window.innerWidth >= 1024 ? 6 : window.innerWidth >= 768 ? 4 : window.innerWidth >= 640 ? 3 : 2;
- const [cols, setCols] = useState(calc);
- useEffect(() => {
-  const onResize = () => setCols(calc());
-  window.addEventListener('resize', onResize);
-  return () => window.removeEventListener('resize', onResize);
- }, []);
- return cols;
 }
 
 function ImageCard({ file, onPreview }) {
@@ -449,77 +433,28 @@ export default function Files() {
  ...sortedFiles.map((f) => `file:${f.id}`),
  ];
 
- // Task5 #20 — virtualized rendering (window-scrolled). Both virtualizers are
- // created unconditionally (hooks must not be conditional); only the active
- // view renders one. List rows can't be measured (FileRow renders a <tr> we
- // can't ref), so fixed estimates + spacer rows; grid rows self-measure.
- const tableRows = useMemo(
- () => [
- ...sortedFolders.map((f) => ({ kind: 'folder', item: f })),
- ...sortedFiles.map((f) => ({ kind: 'file', item: f })),
- ],
- [sortedFolders, sortedFiles],
- );
- const listWrapRef = useRef(null);
- const rowVirtualizer = useWindowVirtualizer({
- count: tableRows.length,
- estimateSize: (i) => (i < sortedFolders.length ? 45 : 74),
- overscan: 12,
- scrollMargin: listWrapRef.current?.offsetTop ?? 0,
- });
- const vRows = rowVirtualizer.getVirtualItems();
- const padTop = vRows.length
- ? Math.max(0, vRows[0].start - rowVirtualizer.options.scrollMargin)
- : 0;
- const padBottom = vRows.length
- ? Math.max(
- 0,
- rowVirtualizer.getTotalSize() -
- (vRows[vRows.length - 1].end - rowVirtualizer.options.scrollMargin),
- )
- : 0;
-
- const gridCols = useGridCols();
- const gridWrapRef = useRef(null);
- const [gridW, setGridW] = useState(0);
- useEffect(() => {
- const el = gridWrapRef.current;
- if (!el || typeof ResizeObserver === 'undefined') return undefined;
- const ro = new ResizeObserver(() => setGridW(el.clientWidth));
- ro.observe(el);
- setGridW(el.clientWidth);
- return () => ro.disconnect();
- }, [view]);
- const gridRowCount = Math.ceil(sortedFiles.length / gridCols);
- // Card = square image (width-driven) + ~26px caption + 12px row gap.
- const gridRowEstimate = gridW ? (gridW - (gridCols - 1) * 12) / gridCols + 38 : 220;
- const gridVirtualizer = useWindowVirtualizer({
- count: gridRowCount,
- estimateSize: () => gridRowEstimate,
- overscan: 6,
- scrollMargin: gridWrapRef.current?.offsetTop ?? 0,
- });
- const gRows = gridVirtualizer.getVirtualItems();
-
- // Auto-fetch the next cursor page when scrolling near the bottom.
+ // Task5 #20 — cursor pages are loaded on demand. The working set is bounded by
+ // pagination (200/page), so we render the loaded rows directly (no DOM
+ // virtualization): the app scrolls inside Layout's <main>, not the window, so a
+ // window virtualizer mis-measured the scroll position and produced a huge empty
+ // scroll area. A bottom sentinel + IntersectionObserver auto-loads the next page
+ // regardless of which element actually scrolls.
  const { hasNextPage, isFetchingNextPage, fetchNextPage } = listQuery;
+ const sentinelRef = useRef(null);
  useEffect(() => {
- if (searchActive || !hasNextPage || isFetchingNextPage) return;
- const last = view === 'grid' ? gRows[gRows.length - 1] : vRows[vRows.length - 1];
- if (!last) return;
- const count = view === 'grid' ? gridRowCount : tableRows.length;
- if (last.index >= count - 8) fetchNextPage();
- }, [
- searchActive,
- hasNextPage,
- isFetchingNextPage,
- view,
- vRows,
- gRows,
- gridRowCount,
- tableRows.length,
- fetchNextPage,
- ]);
+ const el = sentinelRef.current;
+ if (!el || searchActive || !hasNextPage || typeof IntersectionObserver === 'undefined') {
+ return undefined;
+ }
+ const io = new IntersectionObserver(
+ (entries) => {
+ if (entries[0]?.isIntersecting && !isFetchingNextPage) fetchNextPage();
+ },
+ { rootMargin: '400px' },
+ );
+ io.observe(el);
+ return () => io.disconnect();
+ }, [searchActive, hasNextPage, isFetchingNextPage, fetchNextPage]);
 
  const handleSelect = (kind, id, checked, shiftKey) => {
  const idx = orderedRef.current.indexOf(`${kind}:${id}`);
@@ -828,37 +763,23 @@ export default function Files() {
  )}
 
  {view === 'grid' ? (
- <div ref={gridWrapRef}>
+ <div>
  {sortedFiles.length === 0 ? (
  <div className="py-12 text-center text-slate-500 dark:text-slate-400">
  {debouncedQ || tagFilter ? t('files.noMatches') : t('files.noFiles')}
  </div>
  ) : (
- <div className="relative" style={{ height: gridVirtualizer.getTotalSize() }}>
- {gRows.map((vr) => (
- <div
- key={vr.key}
- ref={gridVirtualizer.measureElement}
- data-index={vr.index}
- className="absolute left-0 grid w-full gap-3 pb-3"
- style={{
- transform: `translateY(${vr.start - gridVirtualizer.options.scrollMargin}px)`,
- gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))`,
- }}
- >
- {sortedFiles
- .slice(vr.index * gridCols, vr.index * gridCols + gridCols)
- .map((file) => (
+ <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+ {sortedFiles.map((file) => (
  <ImageCard key={file.id} file={file} onPreview={setPreview} />
- ))}
- </div>
  ))}
  </div>
  )}
  {loadMoreFooter}
+ <div ref={sentinelRef} aria-hidden="true" className="h-px w-full" />
  </div>
  ) : (
- <div className="card overflow-x-auto" ref={listWrapRef}>
+ <div className="card overflow-x-auto">
  <table className="w-full min-w-[600px] text-sm">
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
@@ -871,17 +792,7 @@ export default function Files() {
  </tr>
  </thead>
  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
- {padTop > 0 && (
- <tr aria-hidden="true">
- <td colSpan={6} style={{ height: padTop, padding: 0, border: 0 }} />
- </tr>
- )}
- {vRows.map((vr) => {
- const row = tableRows[vr.index];
- if (!row) return null;
- if (row.kind === 'folder') {
- const f = row.item;
- return (
+ {sortedFolders.map((f) => (
  <FolderRow
  key={`d-${f.id}`}
  folder={f}
@@ -893,10 +804,8 @@ export default function Files() {
  onShare={(x) => setShareTarget({ folderId: x.id, name: x.name })}
  onDropFile={moveFileTo}
  />
- );
- }
- const file = row.item;
- return (
+ ))}
+ {sortedFiles.map((file) => (
  <FileRow
  key={file.id}
  file={file}
@@ -921,14 +830,8 @@ export default function Files() {
  setSearch('');
  }}
  />
- );
- })}
- {padBottom > 0 && (
- <tr aria-hidden="true">
- <td colSpan={6} style={{ height: padBottom, padding: 0, border: 0 }} />
- </tr>
- )}
- {!tableRows.length && (
+ ))}
+ {!sortedFolders.length && !sortedFiles.length && (
  <tr>
  <td colSpan={6} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
  {debouncedQ || tagFilter ? t('files.noMatches') : t('files.emptyFolder')}
@@ -938,6 +841,7 @@ export default function Files() {
  </tbody>
  </table>
  {loadMoreFooter}
+ <div ref={sentinelRef} aria-hidden="true" className="h-px w-full" />
  </div>
  )}
 
