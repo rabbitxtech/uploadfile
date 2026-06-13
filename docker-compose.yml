@@ -91,6 +91,11 @@ services:
       WHISPER_ENABLED: "true"
       WHISPER_MODEL: "base"
       WHISPER_LANG: "auto"
+      # Task5 #7 — Web Push (PWA). Dev VAPID keypair; generate your own for prod
+      # with `npx web-push generate-vapid-keys`. Push is a no-op if these are unset.
+      VAPID_PUBLIC_KEY: "BBchE9k_nLPUcStV0xe8w-VrNFRczteBhuaR8HVdP6idxmxwzqGhhAZAeNs6Gb_37JEP-pHYLAeqWbZcyp5c4wU"
+      VAPID_PRIVATE_KEY: "oyyobyc5nQdFj1rFw2h2EDBi_JcE_ce9k4dIev94Y64"
+      VAPID_SUBJECT: "mailto:admin@uploader.local"
       # B9 — email (Mailpit). Point at a real relay (Gmail/SendGrid) for prod.
       SMTP_HOST: mailpit
       SMTP_PORT: "1025"

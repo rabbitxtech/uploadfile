@@ -16,6 +16,7 @@ import shareRoutes from './routes/shares.routes.js';
 import trashRoutes from './routes/trash.routes.js';
 import userRoutes from './routes/users.routes.js';
 import notificationRoutes from './routes/notifications.routes.js';
+import pushRoutes from './routes/push.routes.js';
 import grantRoutes from './routes/grants.routes.js';
 import groupRoutes from './routes/groups.routes.js';
 import collectionRoutes from './routes/collections.routes.js';
@@ -98,6 +99,7 @@ export function buildApp() {
   app.use('/api/trash', trashRoutes);
   app.use('/api/users', userRoutes);
   app.use('/api/notifications', notificationRoutes);
+  app.use('/api/push', pushRoutes);
   app.use('/api/grants', grantRoutes);
   app.use('/api/groups', groupRoutes);
   app.use('/api/collections', collectionRoutes);

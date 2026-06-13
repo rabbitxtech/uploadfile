@@ -261,5 +261,26 @@ export const openapiDocument = {
     '/api/notifications': {
       get: { tags: ['Notifications'], summary: 'List notifications', security: bearer, parameters: [{ name: 'unread', in: 'query', schema: { type: 'integer' } }], responses: { 200: ok } },
     },
+    '/api/push/vapid-public-key': {
+      get: { tags: ['Push'], summary: 'VAPID public key + whether push is configured', responses: { 200: ok } },
+    },
+    '/api/push/subscribe': {
+      post: {
+        tags: ['Push'],
+        summary: 'Register this browser for Web Push',
+        security: bearer,
+        requestBody: jsonBody({ subscription: { type: 'object', description: 'PushSubscription.toJSON()' } }, ['subscription']),
+        responses: { 201: ok },
+      },
+    },
+    '/api/push/unsubscribe': {
+      post: {
+        tags: ['Push'],
+        summary: 'Remove this browser from Web Push',
+        security: bearer,
+        requestBody: jsonBody({ endpoint: { type: 'string' } }, ['endpoint']),
+        responses: { 200: ok },
+      },
+    },
   },
 };

@@ -1,13 +1,96 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
-import { Key, Plus, Trash2, Copy, Check, Monitor, LogOut, ShieldCheck, ShieldOff, Languages } from 'lucide-react';
+import { Key, Plus, Trash2, Copy, Check, Monitor, LogOut, ShieldCheck, ShieldOff, Languages, Bell, BellOff } from 'lucide-react';
 import { UserApi, KeyApi, AuthApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 import { useLocale } from '../store/locale.js';
 import { formatBytes, formatDate } from '../lib/format.js';
 import { copyText } from '../lib/uid.js';
+import { getPushState, serverPushEnabled, enablePush, disablePush } from '../lib/push.js';
+
+// Task5 #7 — Web Push opt-in. Subscribes this browser's PushManager so the user
+// is reached even with no tab open. Needs a registered SW (PROD/localhost) + a
+// secure context; the card explains why it's unavailable otherwise.
+function PushCard() {
+  const { t } = useTranslation();
+  const [state, setState] = useState(null); // { supported, subscribed, permission }
+  const [serverOn, setServerOn] = useState(true);
+  const [busy, setBusy] = useState(false);
+
+  const refresh = async () => {
+    setState(await getPushState());
+    setServerOn(await serverPushEnabled());
+  };
+  useEffect(() => {
+    refresh();
+  }, []);
+
+  const toggle = async () => {
+    setBusy(true);
+    try {
+      if (state?.subscribed) {
+        await disablePush();
+        toast.success(t('profile.pushDisabledToast'));
+      } else {
+        await enablePush();
+        toast.success(t('profile.pushEnabledToast'));
+      }
+      await refresh();
+    } catch (e) {
+      const map = {
+        unsupported: t('profile.pushUnsupported'),
+        'not-configured': t('profile.pushNotConfigured'),
+        denied: t('profile.pushDenied'),
+        'no-sw': t('profile.pushNoSw'),
+      };
+      toast.error(map[e?.message] || t('profile.pushFailed'));
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enabled = !!state?.subscribed;
+  const unavailable = state && (!state.supported || !serverOn);
+  const note =
+    state && !state.supported
+      ? t('profile.pushUnsupported')
+      : !serverOn
+      ? t('profile.pushNotConfigured')
+      : state?.permission === 'denied'
+      ? t('profile.pushDenied')
+      : null;
+
+  return (
+    <div className="card p-5 text-sm lg:col-span-2">
+      <div className="mb-2 flex items-center gap-2 font-medium">
+        {enabled ? (
+          <Bell className="h-4 w-4 text-brand-600 dark:text-brand-400" />
+        ) : (
+          <BellOff className="h-4 w-4 text-slate-400" />
+        )}
+        {t('profile.push')}
+        {enabled && (
+          <span className="rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
+            {t('profile.pushEnabled')}
+          </span>
+        )}
+      </div>
+      <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">{t('profile.pushHint')}</p>
+      {note && <p className="mb-3 text-xs text-amber-600 dark:text-amber-400">{note}</p>}
+      <button
+        onClick={toggle}
+        disabled={busy || unavailable || state?.permission === 'denied'}
+        className={enabled ? 'btn-secondary' : 'btn-primary'}
+      >
+        {enabled ? <BellOff className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+        {enabled ? t('profile.pushDisable') : t('profile.pushEnable')}
+      </button>
+    </div>
+  );
+}
 
 const LANGUAGES = [
   { code: 'en', label: 'English' },
@@ -556,6 +639,8 @@ export default function Profile() {
  </div>
 
  <TwoFactorCard />
+
+ <PushCard />
 
  <SessionsCard />
 

@@ -44,6 +44,24 @@ model User {
   tokens         Token[]
   sessions       Session[]
   groupMemberships GroupMember[]
+  pushSubscriptions PushSubscription[]
+}
+
+// Task5 #7 — Web Push (PWA): one row per browser/device push endpoint. The
+// p256dh/auth keys come from the browser's PushManager subscription; web-push
+// encrypts the payload with them. Endpoints that return 404/410 ("gone") are
+// pruned on send. Deleting the user cascades their subscriptions.
+model PushSubscription {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  @@index([userId])
 }
 
 // Login sessions — one row per device/login. The JWT carries the session id

@@ -66,6 +66,17 @@ export const env = {
     lang: process.env.WHISPER_LANG || 'auto',
     bin: process.env.WHISPER_BIN || 'whisper-cli',
   },
+  // Task5 #7 — Web Push (PWA). VAPID keypair authenticates the server to the
+  // browser push services. Generate once with `npx web-push generate-vapid-keys`.
+  // Push is enabled only when both keys are set (otherwise it's a no-op).
+  webPush: {
+    publicKey: process.env.VAPID_PUBLIC_KEY || '',
+    privateKey: process.env.VAPID_PRIVATE_KEY || '',
+    subject: process.env.VAPID_SUBJECT || 'mailto:admin@example.com',
+    get enabled() {
+      return !!(this.publicKey && this.privateKey);
+    },
+  },
   minio: {
     endPoint: process.env.MINIO_ENDPOINT || 'localhost',
     port: int('MINIO_PORT', 9000),
