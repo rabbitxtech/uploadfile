@@ -23,11 +23,21 @@ function urlBase64ToUint8Array(base64String) {
   return out;
 }
 
+// Resolve the SW registration WITHOUT blocking: `navigator.serviceWorker.ready`
+// never settles when no SW is registered (e.g. the Vite dev server), which would
+// hang the Profile card. `getRegistration()` resolves to undefined in that case.
 async function getRegistration() {
   if (!('serviceWorker' in navigator)) return null;
-  // Resolves once a SW controls the page (won't resolve if none is registered,
-  // e.g. the Vite dev server — guard callers with a race/try elsewhere).
-  return navigator.serviceWorker.ready;
+  return (await navigator.serviceWorker.getRegistration()) || null;
+}
+
+// Fetch the VAPID key + enabled flag once and reuse it (used by both the
+// enabled-check on mount and the subscribe on click).
+let vapidCache = null;
+async function getVapid() {
+  if (vapidCache) return vapidCache;
+  vapidCache = await api.get('/push/vapid-public-key').then((r) => r.data);
+  return vapidCache;
 }
 
 export async function getPushState() {
@@ -39,8 +49,7 @@ export async function getPushState() {
 
 export async function serverPushEnabled() {
   try {
-    const { enabled } = await api.get('/push/vapid-public-key').then((r) => r.data);
-    return !!enabled;
+    return !!(await getVapid()).enabled;
   } catch {
     return false;
   }
@@ -48,7 +57,7 @@ export async function serverPushEnabled() {
 
 export async function enablePush() {
   if (!pushSupported()) throw new Error('unsupported');
-  const { key, enabled } = await api.get('/push/vapid-public-key').then((r) => r.data);
+  const { key, enabled } = await getVapid();
   if (!enabled || !key) throw new Error('not-configured');
   const perm = await Notification.requestPermission();
   if (perm !== 'granted') throw new Error('denied');

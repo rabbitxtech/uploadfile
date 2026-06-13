@@ -454,7 +454,9 @@ export default function Files() {
  );
  io.observe(el);
  return () => io.disconnect();
- }, [searchActive, hasNextPage, isFetchingNextPage, fetchNextPage]);
+ // `view` is included so the observer re-attaches to the new sentinel element
+ // when toggling list↔grid (each view renders its own sentinel node).
+ }, [searchActive, hasNextPage, isFetchingNextPage, fetchNextPage, view]);
 
  const handleSelect = (kind, id, checked, shiftKey) => {
  const idx = orderedRef.current.indexOf(`${kind}:${id}`);
@@ -493,10 +495,12 @@ export default function Files() {
  // view only renders files (no folders), so its universe is files only.
  const gridMode = view === 'grid';
  const totalRows = gridMode ? sortedFiles.length : sortedFolders.length + sortedFiles.length;
+ // Membership check (not Set-size) so a selection holding ids of rows that were
+ // since removed/moved can't misreport the select-all state.
  const allSelected =
  totalRows > 0 &&
- selected.files.size === sortedFiles.length &&
- selected.folders.size === (gridMode ? 0 : sortedFolders.length);
+ sortedFiles.every((f) => selected.files.has(f.id)) &&
+ (gridMode || sortedFolders.every((f) => selected.folders.has(f.id)));
  const someSelected = hasSelection && !allSelected;
  const toggleSelectAll = () => {
  if (allSelected) {
