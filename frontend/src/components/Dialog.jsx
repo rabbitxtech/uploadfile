@@ -90,7 +90,7 @@ export function DialogHost() {
  <div
  role="dialog"
  aria-modal="true"
- className="w-full max-w-md rounded-xl bg-white dark:bg-slate-900 shadow-2xl ring-1 ring-slate-200 animate-[popIn_140ms_ease-out]"
+ className="w-full max-w-md rounded-xl bg-white dark:bg-slate-900 shadow-2xl ring-1 ring-slate-200 dark:ring-slate-700 animate-[popIn_140ms_ease-out]"
  >
  <div className="flex items-start gap-3 p-5">
  <div
@@ -104,7 +104,7 @@ export function DialogHost() {
  <Icon className="h-5 w-5" />
  </div>
  <div className="flex-1">
- <h2 className="text-base font-semibold text-slate-900">
+ <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
  {dlg.title || (dlg.kind === 'prompt' ? 'Enter value' : 'Are you sure?')}
  </h2>
  {dlg.message && (

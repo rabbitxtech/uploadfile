@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { Cloud, Download, Lock, Folder as FolderIcon, File as FileIcon, Upload } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { ShareApi, ConfigApi } from '../api/endpoints.js';
@@ -7,6 +8,7 @@ import { apiBase } from '../api/client.js';
 import { formatBytes } from '../lib/format.js';
 
 export default function Shared() {
+ const { t } = useTranslation();
  const { token } = useParams();
  const [info, setInfo] = useState(null);
  const [password, setPassword] = useState('');
@@ -24,7 +26,7 @@ export default function Shared() {
  const reload = () =>
  ShareApi.public(token)
  .then(setInfo)
- .catch((e) => setError(e.response?.data?.error || 'Share not found'));
+ .catch((e) => setError(e.response?.data?.error || t('shared.notFound')));
 
  // Password-protected shares come back `locked` with no contents — exchange the
  // password for the full payload (file metadata / folder listing).
@@ -36,7 +38,7 @@ export default function Shared() {
  const full = await ShareApi.unlock(token, password);
  setInfo(full);
  } catch (err) {
- setError(err.response?.data?.error || 'Wrong password');
+ setError(err.response?.data?.error || t('shared.wrongPassword'));
  } finally {
  setLoading(false);
  }
@@ -57,10 +59,10 @@ export default function Shared() {
  for (const f of files) {
  await ShareApi.publicUpload(token, f, password || undefined);
  }
- toast.success(`Uploaded ${files.length} file${files.length === 1 ? '' : 's'}`);
+ toast.success(t('shared.uploaded', { count: files.length }));
  await reload();
  } catch (err) {
- const msg = err.response?.data?.error || 'Upload failed';
+ const msg = err.response?.data?.error || t('shared.uploadFailed');
  setError(msg);
  toast.error(msg);
  } finally {
@@ -80,7 +82,7 @@ export default function Shared() {
  });
  if (!resp.ok) {
  const data = await resp.json().catch(() => ({}));
- throw new Error(data.error || 'Download failed');
+ throw new Error(data.error || t('shared.downloadFailed'));
  }
  const blob = await resp.blob();
  const url = URL.createObjectURL(blob);
@@ -104,7 +106,7 @@ export default function Shared() {
  <div className="card w-full max-w-lg p-6">
  <div className="mb-6 flex items-center gap-2 text-brand-700 dark:text-brand-400">
  <Cloud className="h-7 w-7" />
- <span className="text-xl font-semibold">Shared with you</span>
+ <span className="text-xl font-semibold">{t('shared.title')}</span>
  </div>
 
  {error && (
@@ -118,15 +120,15 @@ export default function Shared() {
  <div className="rounded border border-slate-200 dark:border-slate-800 p-3 text-sm text-slate-600 dark:text-slate-300">
  <div className="mb-1 flex items-center gap-2 font-medium text-slate-900 dark:text-slate-100">
  <Lock className="h-4 w-4 text-amber-500" />
- This {info.isFolder ? 'folder' : 'file'} is password-protected
+ {info.isFolder ? t('shared.lockedFolder') : t('shared.lockedFile')}
  </div>
- Enter the password to view {info.isFolder ? 'its contents' : 'and download it'}.
+ {info.isFolder ? t('shared.enterPwFolder') : t('shared.enterPwFile')}
  </div>
  <div className="relative">
  <Lock className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400 dark:text-slate-500" />
  <input
  type="password"
- placeholder="Password"
+ placeholder={t('auth.password')}
  className="input pl-8"
  value={password}
  onChange={(e) => setPassword(e.target.value)}
@@ -135,7 +137,7 @@ export default function Shared() {
  </div>
  <button type="submit" disabled={loading || !password} className="btn-primary w-full justify-center">
  <Lock className="h-4 w-4" />
- {loading ? 'Unlocking…' : 'Unlock'}
+ {loading ? t('shared.unlocking') : t('shared.unlock')}
  </button>
  </form>
  )}
@@ -160,7 +162,7 @@ export default function Shared() {
  {info.folder.name}
  </div>
  <div className="mb-2 text-xs text-slate-500 dark:text-slate-400">
- {info.files?.length || 0} file(s) ·{' '}
+ {t('fileList.fileCount', { count: info.files?.length || 0 })} ·{' '}
  {formatBytes(
  (info.files || []).reduce((sum, f) => sum + Number(f.size || 0), 0),
  )}
@@ -176,24 +178,24 @@ export default function Shared() {
  </div>
  ))}
  {(info.files || []).length === 0 && (
- <div className="py-1 text-xs text-slate-500 dark:text-slate-400">Folder is empty</div>
+ <div className="py-1 text-xs text-slate-500 dark:text-slate-400">{t('shared.folderEmpty')}</div>
  )}
  </div>
  </div>
  )}
  {info.expiresAt && (
  <div className="mb-2 text-xs text-slate-500 dark:text-slate-400">
- Expires: {new Date(info.expiresAt).toLocaleString()}
+ {t('shared.expires', { date: new Date(info.expiresAt).toLocaleString() })}
  </div>
  )}
  {info.remainingDownloads != null && (
  <div className="mb-2 text-xs text-slate-500 dark:text-slate-400">
- Remaining downloads: {info.remainingDownloads}
+ {t('shared.remainingDownloads', { count: info.remainingDownloads })}
  </div>
  )}
  {info.folder && !zipEnabled ? (
  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-300">
- Folder ZIP download is temporarily disabled.
+ {t('shared.zipDisabled')}
  </div>
  ) : (
  <form onSubmit={download} className="space-y-3">
@@ -202,7 +204,7 @@ export default function Shared() {
  <Lock className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-400 dark:text-slate-500" />
  <input
  type="password"
- placeholder="Password"
+ placeholder={t('auth.password')}
  className="input pl-8"
  value={password}
  onChange={(e) => setPassword(e.target.value)}
@@ -212,10 +214,10 @@ export default function Shared() {
  <button type="submit" disabled={loading} className="btn-primary w-full justify-center">
  <Download className="h-4 w-4" />
  {loading
- ? 'Downloading...'
+ ? t('shared.downloading')
  : info.folder
- ? 'Download folder as ZIP'
- : 'Download'}
+ ? t('shared.downloadFolderZip')
+ : t('shared.download')}
  </button>
  </form>
  )}
@@ -224,14 +226,14 @@ export default function Shared() {
  <div className="mt-4 rounded-lg border border-dashed border-brand-300 bg-brand-50/50 p-4 text-center dark:border-brand-500/40 dark:bg-brand-500/10">
  <Upload className="mx-auto mb-2 h-6 w-6 text-brand-600 dark:text-brand-400" />
  <div className="mb-1 text-sm font-medium text-slate-800 dark:text-slate-100">
- Upload files to this folder
+ {t('shared.uploadToFolder')}
  </div>
  <div className="mb-3 text-xs text-slate-500 dark:text-slate-400">
- No account needed. Max 100 MB per file.
+ {t('shared.noAccountNeeded')}
  </div>
  <label className="btn-primary mx-auto inline-flex cursor-pointer">
  <Upload className="h-4 w-4" />
- {uploading ? 'Uploading…' : 'Choose files'}
+ {uploading ? t('shared.uploading') : t('shared.chooseFiles')}
  <input type="file" multiple className="hidden" disabled={uploading} onChange={onUpload} />
  </label>
  </div>

@@ -1,11 +1,13 @@
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
+import { useTranslation, Trans } from 'react-i18next';
 import { Cloud, MailCheck } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { AuthApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 
 export default function Register() {
+ const { t } = useTranslation();
  const [email, setEmail] = useState('');
  const [password, setPassword] = useState('');
  const [confirm, setConfirm] = useState('');
@@ -18,22 +20,22 @@ export default function Register() {
 
  const submit = async (e) => {
  e.preventDefault();
- if (password.length < 6) return toast.error('Password must be at least 6 characters');
- if (password !== confirm) return toast.error('Passwords do not match');
+ if (password.length < 6) return toast.error(t('profile.passwordTooShort'));
+ if (password !== confirm) return toast.error(t('profile.passwordsNoMatch'));
  setLoading(true);
  try {
  const data = await AuthApi.register({ email, password, name });
  if (data.token) {
  // First user (admin) is auto-verified and signed in immediately.
  setSession(data);
- toast.success('Account created');
+ toast.success(t('register.accountCreated'));
  navigate('/files');
  } else {
  // Everyone else must confirm their email first.
  setSentTo(data.email || email);
  }
  } catch (e) {
- toast.error(e.response?.data?.error || 'Registration failed');
+ toast.error(e.response?.data?.error || t('register.registrationFailed'));
  } finally {
  setLoading(false);
  }
@@ -43,9 +45,9 @@ export default function Register() {
  setResending(true);
  try {
  await AuthApi.resendVerification(sentTo);
- toast.success('Verification email re-sent');
+ toast.success(t('register.verificationResent'));
  } catch {
- toast.error('Could not resend — try again later');
+ toast.error(t('auth.resendFailed'));
  } finally {
  setResending(false);
  }
@@ -58,21 +60,22 @@ export default function Register() {
  <div className="mb-4 flex justify-center text-brand-600 dark:text-brand-400">
  <MailCheck className="h-12 w-12" />
  </div>
- <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">Check your email</h1>
+ <h1 className="text-lg font-semibold text-slate-800 dark:text-slate-100">{t('register.checkEmail')}</h1>
  <p className="mt-2 text-sm text-slate-500 dark:text-slate-400">
- We sent a verification link to <span className="font-medium text-slate-700 dark:text-slate-200">{sentTo}</span>.
- Click it to activate your account, then sign in.
+ <Trans i18nKey="register.sentLinkTo" values={{ email: sentTo }}>
+ <span className="font-medium text-slate-700 dark:text-slate-200">email</span>
+ </Trans>
  </p>
  <button
  onClick={resend}
  disabled={resending}
  className="btn-secondary mt-5 w-full justify-center"
  >
- {resending ? 'Resending…' : 'Resend verification email'}
+ {resending ? t('auth.resending') : t('auth.resendVerification')}
  </button>
  <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
  <Link to="/login" className="text-brand-600 dark:text-brand-400 hover:underline">
- Back to sign in
+ {t('auth.backToSignIn')}
  </Link>
  </p>
  </div>
@@ -85,18 +88,18 @@ export default function Register() {
  <form onSubmit={submit} className="card w-full max-w-sm p-6">
  <div className="mb-6 flex items-center gap-2 text-brand-700 dark:text-brand-400">
  <Cloud className="h-7 w-7" />
- <span className="text-xl font-semibold">Create account</span>
+ <span className="text-xl font-semibold">{t('register.title')}</span>
  </div>
  <div className="space-y-3">
  <input
- placeholder="Display name (optional)"
+ placeholder={t('register.displayName')}
  className="input"
  value={name}
  onChange={(e) => setName(e.target.value)}
  />
  <input
  type="email"
- placeholder="Email address"
+ placeholder={t('register.email')}
  required
  autoComplete="email"
  className="input"
@@ -105,7 +108,7 @@ export default function Register() {
  />
  <input
  type="password"
- placeholder="Password (min 6 chars)"
+ placeholder={t('register.passwordMin')}
  required
  minLength={6}
  autoComplete="new-password"
@@ -115,7 +118,7 @@ export default function Register() {
  />
  <input
  type="password"
- placeholder="Confirm password"
+ placeholder={t('register.confirmPassword')}
  required
  minLength={6}
  autoComplete="new-password"
@@ -125,15 +128,15 @@ export default function Register() {
  />
  </div>
  <button type="submit" disabled={loading} className="btn-primary mt-4 w-full justify-center">
- {loading ? 'Creating...' : 'Create account'}
+ {loading ? t('register.creating') : t('register.title')}
  </button>
  <p className="mt-3 text-center text-xs text-slate-400 dark:text-slate-500">
- We'll email you a link to verify your address.
+ {t('register.verifyNote')}
  </p>
  <p className="mt-4 text-center text-sm text-slate-500 dark:text-slate-400">
- Have an account?{' '}
+ {t('register.haveAccount')}{' '}
  <Link to="/login" className="text-brand-600 dark:text-brand-400 hover:underline">
- Sign in
+ {t('auth.signIn')}
  </Link>
  </p>
  </form>

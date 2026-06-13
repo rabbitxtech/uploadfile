@@ -13,12 +13,18 @@ function apply(lng) {
 
 export const useLocale = create(
   persist(
-    (set) => ({
+    (set, get) => ({
       language: i18n.language || 'en',
       setLanguage: (language) => {
         if (!SUPPORTED_LANGUAGES.includes(language)) return;
         apply(language);
         set({ language });
+      },
+      // Quick toggle between the two supported languages.
+      toggleLanguage: () => {
+        const next = (get().language || 'en') === 'vi' ? 'en' : 'vi';
+        apply(next);
+        set({ language: next });
       },
     }),
     {

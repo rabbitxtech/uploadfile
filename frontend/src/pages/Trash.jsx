@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useSearchParams, Link } from 'react-router-dom';
+import { useTranslation, Trans } from 'react-i18next';
 import toast from 'react-hot-toast';
 import {
  RefreshCcw,
@@ -35,6 +36,7 @@ function FileTypeIcon({ mime }) {
 }
 
 export default function Trash() {
+ const { t } = useTranslation();
  const qc = useQueryClient();
  const me = useAuth((s) => s.user);
  const setUser = useAuth((s) => s.setUser);
@@ -73,9 +75,9 @@ export default function Trash() {
  };
  const deleteForever = async (id) => {
  const ok = await confirmDialog({
- title: 'Delete file permanently?',
- message: 'This action cannot be undone. The file will be removed from storage.',
- confirmText: 'Delete forever',
+ title: t('trash.deletePermanentlyTitle'),
+ message: t('trash.deletePermanentlyMsg'),
+ confirmText: t('trash.deleteForever'),
  });
  if (!ok) return;
  await TrashApi.removeFile(id);
@@ -83,13 +85,13 @@ export default function Trash() {
  };
  const emptyAll = async () => {
  const ok = await confirmDialog({
- title: 'Empty trash?',
- message: 'All items in trash will be permanently deleted. This cannot be undone.',
- confirmText: 'Empty trash',
+ title: t('trash.emptyTrashTitle'),
+ message: t('trash.emptyTrashMsg'),
+ confirmText: t('trash.emptyTrash'),
  });
  if (!ok) return;
  await TrashApi.empty({ ownerId: ownerFilter });
- toast.success('Trash emptied');
+ toast.success(t('trash.trashEmptied'));
  refresh();
  };
 
@@ -99,46 +101,46 @@ export default function Trash() {
  <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm dark:border-amber-500/30 dark:bg-amber-500/10">
  <Eye className="h-4 w-4 text-amber-700 dark:text-amber-300" />
  <span className="text-amber-800 dark:text-amber-300">
- Trash of{' '}
+ {t('trash.trashOf')}{' '}
  <strong>
  {viewedUserQuery.data?.name || viewedUserQuery.data?.email || asUserId}
  </strong>{' '}
- (admin)
+ {t('trash.admin')}
  </span>
  <Link
  to="/trash"
  className="ml-auto rounded px-2 py-0.5 text-xs text-amber-800 hover:bg-amber-100 dark:text-amber-200 dark:hover:bg-amber-500/20"
  >
- Exit
+ {t('trash.exit')}
  </Link>
  </div>
  )}
  <div className="mb-4 flex items-center gap-2">
- <h1 className="text-lg font-semibold">Trash</h1>
+ <h1 className="text-lg font-semibold">{t('trash.title')}</h1>
  <button className="btn-secondary" onClick={() => refetch()}>
- <RefreshCcw className="h-4 w-4" /> Refresh
+ <RefreshCcw className="h-4 w-4" /> {t('trash.refresh')}
  </button>
  <button className="btn-danger ml-auto" onClick={emptyAll}>
- <Trash2 className="h-4 w-4" /> Empty trash
+ <Trash2 className="h-4 w-4" /> {t('trash.emptyTrash')}
  </button>
  </div>
 
  {data?.retentionDays > 0 && (
  <div className="mb-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-500 dark:border-slate-800 dark:bg-slate-900/60 dark:text-slate-400">
- Items in trash are permanently deleted after <strong>{data.retentionDays} days</strong>. Restore anything you want to keep.
+ <Trans i18nKey="trash.retentionNote" values={{ days: data.retentionDays }}><strong>days</strong></Trans>
  </div>
  )}
 
- {isFetching && <div className="text-sm text-slate-500 dark:text-slate-400">Loading...</div>}
+ {isFetching && <div className="text-sm text-slate-500 dark:text-slate-400">{t('trash.loading')}</div>}
 
  <div className="card overflow-x-auto">
  <table className="w-full min-w-[560px] text-sm">
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
- <th className="px-3 py-2">Name</th>
- <th className="px-3 py-2">Type</th>
- <th className="px-3 py-2">Size</th>
- <th className="px-3 py-2">Trashed at</th>
+ <th className="px-3 py-2">{t('files.sort.name')}</th>
+ <th className="px-3 py-2">{t('files.sort.type')}</th>
+ <th className="px-3 py-2">{t('files.sort.size')}</th>
+ <th className="px-3 py-2">{t('trash.thTrashedAt')}</th>
  <th className="px-3 py-2"></th>
  </tr>
  </thead>
@@ -151,7 +153,7 @@ export default function Trash() {
  <span className="truncate font-medium text-slate-900 dark:text-slate-100">{f.name}</span>
  </div>
  </td>
- <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">Folder</td>
+ <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{t('trash.folder')}</td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">-</td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{formatDate(f.trashedAt)}</td>
  <td className="px-3 py-2 text-right text-xs">
@@ -159,7 +161,7 @@ export default function Trash() {
  className="text-brand-600 dark:text-brand-400 hover:underline"
  onClick={() => restoreFolder(f.id)}
  >
- <RotateCcw className="inline h-3.5 w-3.5" /> Restore
+ <RotateCcw className="inline h-3.5 w-3.5" /> {t('trash.restore')}
  </button>
  </td>
  </tr>
@@ -180,13 +182,13 @@ export default function Trash() {
  className="mr-3 text-brand-600 dark:text-brand-400 hover:underline"
  onClick={() => restoreFile(f.id)}
  >
- <RotateCcw className="inline h-3.5 w-3.5" /> Restore
+ <RotateCcw className="inline h-3.5 w-3.5" /> {t('trash.restore')}
  </button>
  <button
  className="text-red-600 dark:text-red-400 hover:underline"
  onClick={() => deleteForever(f.id)}
  >
- Delete forever
+ {t('trash.deleteForever')}
  </button>
  </td>
  </tr>
@@ -194,7 +196,7 @@ export default function Trash() {
  {!data?.files?.length && !data?.folders?.length && (
  <tr>
  <td colSpan={5} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
- Trash is empty
+ {t('trash.isEmpty')}
  </td>
  </tr>
  )}

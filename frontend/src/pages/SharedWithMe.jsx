@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import {
   Folder as FolderIcon,
   File as FileIcon,
@@ -24,6 +25,7 @@ const ICONS = {
 };
 
 function PermBadge({ permission }) {
+  const { t } = useTranslation();
   return (
     <span
       className={
@@ -33,12 +35,13 @@ function PermBadge({ permission }) {
           : 'bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300')
       }
     >
-      {permission}
+      {t(`perm.${permission}`, permission)}
     </span>
   );
 }
 
 export default function SharedWithMe() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const [preview, setPreview] = useState(null);
   const { data, isLoading } = useQuery({
@@ -52,18 +55,18 @@ export default function SharedWithMe() {
 
   return (
     <div className="p-4 md:p-6">
-      <h1 className="mb-4 text-lg font-semibold">Shared with me</h1>
+      <h1 className="mb-4 text-lg font-semibold">{t('nav.sharedWithMe')}</h1>
 
       {empty && (
         <div className="card p-8 text-center text-sm text-slate-500 dark:text-slate-400">
-          Nothing has been shared with you yet.
+          {t('sharedWithMe.empty')}
         </div>
       )}
 
       {folders.length > 0 && (
         <>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Folders
+            {t('nav.folders')}
           </div>
           <div className="mb-6 grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {folders.map((f) => (
@@ -78,8 +81,8 @@ export default function SharedWithMe() {
                     {f.name}
                   </div>
                   <div className="truncate text-xs text-slate-500 dark:text-slate-400">
-                    from {f.owner?.name || f.owner?.email}
-                    {f.viaGroup ? ` · via group "${f.viaGroup}"` : ''}
+                    {t('sharedWithMe.fromOwner', { owner: f.owner?.name || f.owner?.email })}
+                    {f.viaGroup ? t('sharedWithMe.viaGroup', { group: f.viaGroup }) : ''}
                   </div>
                 </div>
                 <PermBadge permission={f.permission} />
@@ -92,17 +95,17 @@ export default function SharedWithMe() {
       {files.length > 0 && (
         <>
           <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-            Files
+            {t('sharedWithMe.filesHdr')}
           </div>
           <div className="card overflow-x-auto">
             <table className="w-full min-w-[560px] text-sm">
               <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
                 <tr>
-                  <th className="px-3 py-2">Name</th>
-                  <th className="px-3 py-2">Owner</th>
-                  <th className="px-3 py-2">Access</th>
-                  <th className="px-3 py-2">Size</th>
-                  <th className="px-3 py-2">Shared</th>
+                  <th className="px-3 py-2">{t('files.sort.name')}</th>
+                  <th className="px-3 py-2">{t('sharedWithMe.thOwner')}</th>
+                  <th className="px-3 py-2">{t('sharedWithMe.thAccess')}</th>
+                  <th className="px-3 py-2">{t('files.sort.size')}</th>
+                  <th className="px-3 py-2">{t('sharedWithMe.thShared')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -126,7 +129,7 @@ export default function SharedWithMe() {
                         {f.owner?.name || f.owner?.email}
                         {f.viaGroup && (
                           <span className="ml-1 text-slate-400 dark:text-slate-500">
-                            · via "{f.viaGroup}"
+                            {t('sharedWithMe.viaShort', { group: f.viaGroup })}
                           </span>
                         )}
                       </td>

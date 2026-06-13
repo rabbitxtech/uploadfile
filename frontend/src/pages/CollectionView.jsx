@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { ArrowLeft, Search as SearchIcon, FolderHeart, X, Play } from 'lucide-react';
 import { CollectionApi } from '../api/endpoints.js';
 import { api } from '../api/client.js';
@@ -8,6 +9,7 @@ import { formatBytes } from '../lib/format.js';
 import PreviewModal from '../components/PreviewModal.jsx';
 
 function ThumbCard({ file, onPreview, onRemove }) {
+  const { t } = useTranslation();
   const [url, setUrl] = useState(null);
   useEffect(() => {
     let alive = true;
@@ -52,7 +54,7 @@ function ThumbCard({ file, onPreview, onRemove }) {
         <button
           onClick={() => onRemove(file)}
           className="absolute right-1 top-1 rounded-full bg-black/55 p-1 text-white opacity-0 hover:bg-red-600 group-hover:opacity-100"
-          title="Remove from collection"
+          title={t('collections.removeFromCollection')}
         >
           <X className="h-3.5 w-3.5" />
         </button>
@@ -62,6 +64,7 @@ function ThumbCard({ file, onPreview, onRemove }) {
 }
 
 export default function CollectionView() {
+  const { t } = useTranslation();
   const { id } = useParams();
   const qc = useQueryClient();
   const [preview, setPreview] = useState(null);
@@ -76,8 +79,8 @@ export default function CollectionView() {
     qc.invalidateQueries({ queryKey: ['collections'] });
   };
 
-  if (isLoading) return <div className="p-6 text-sm text-slate-500 dark:text-slate-400">Loading…</div>;
-  if (!data) return <div className="p-6 text-sm text-red-500">Collection not found</div>;
+  if (isLoading) return <div className="p-6 text-sm text-slate-500 dark:text-slate-400">{t('common.loading')}</div>;
+  if (!data) return <div className="p-6 text-sm text-red-500">{t('collections.notFound')}</div>;
 
   const files = data.files || [];
   const isSmart = data.kind === 'smart';
@@ -90,22 +93,25 @@ export default function CollectionView() {
         </Link>
         {isSmart ? <SearchIcon className="h-5 w-5 text-brand-500" /> : <FolderHeart className="h-5 w-5 text-brand-500" />}
         <h1 className="text-lg font-semibold">{data.name}</h1>
-        <span className="text-sm text-slate-400">· {files.length} file{files.length === 1 ? '' : 's'}</span>
+        <span className="text-sm text-slate-400">· {t('fileList.fileCount', { count: files.length })}</span>
       </div>
       <div className="mb-5 text-xs text-slate-500 dark:text-slate-400">
         {isSmart
-          ? `Smart collection — live results for ${[
-              data.filter?.q && `“${data.filter.q}”`,
-              data.filter?.tag && `tag:${data.filter.tag}`,
-            ]
-              .filter(Boolean)
-              .join(' · ') || 'all files'}`
-          : 'Manual collection'}
+          ? t('collections.smartLive', {
+              filter:
+                [
+                  data.filter?.q && `“${data.filter.q}”`,
+                  data.filter?.tag && `${t('files.tagPrefix')}${data.filter.tag}`,
+                ]
+                  .filter(Boolean)
+                  .join(' · ') || t('collections.allFiles'),
+            })
+          : t('collections.manualCollection')}
       </div>
 
       {files.length === 0 ? (
         <div className="card p-12 text-center text-slate-500 dark:text-slate-400">
-          {isSmart ? 'No files match this search yet.' : 'Empty — add files from the file list (“Add to collection”).'}
+          {isSmart ? t('collections.emptySmart') : t('collections.emptyManual')}
         </div>
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">

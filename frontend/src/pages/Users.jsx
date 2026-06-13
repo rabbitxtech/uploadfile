@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation, Trans } from 'react-i18next';
 import toast from 'react-hot-toast';
 import {
  Ban,
@@ -30,6 +31,7 @@ function gbInput(bytes) {
 }
 
 function CreateUserModal({ open, onClose, onCreated }) {
+ const { t } = useTranslation();
  const [form, setForm] = useState({
  email: '',
  password: '',
@@ -53,11 +55,11 @@ function CreateUserModal({ open, onClose, onCreated }) {
  role: form.role,
  quotaBytes,
  });
- toast.success('User created');
+ toast.success(t('users.userCreated'));
  onCreated?.();
  onClose();
  } catch (err) {
- toast.error(err.response?.data?.error || 'Failed to create user');
+ toast.error(err.response?.data?.error || t('users.createFailed'));
  } finally {
  setBusy(false);
  }
@@ -74,7 +76,7 @@ function CreateUserModal({ open, onClose, onCreated }) {
  <div className="mb-4 flex items-center justify-between">
  <div className="flex items-center gap-2">
  <UserPlus className="h-5 w-5 text-brand-600 dark:text-brand-400" />
- <span className="font-medium">Create user</span>
+ <span className="font-medium">{t('users.createUser')}</span>
  </div>
  <button className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white" onClick={onClose}>
  <X className="h-5 w-5" />
@@ -82,11 +84,11 @@ function CreateUserModal({ open, onClose, onCreated }) {
  </div>
  <form onSubmit={submit} className="space-y-3">
  <div>
- <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Username</label>
+ <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">{t('profile.username')}</label>
  <input
  className="input"
  type="text"
- placeholder="letters, digits, . _ - or email"
+ placeholder={t('users.usernameHint')}
  required
  minLength={3}
  value={form.email}
@@ -94,7 +96,7 @@ function CreateUserModal({ open, onClose, onCreated }) {
  />
  </div>
  <div>
- <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Password</label>
+ <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">{t('auth.password')}</label>
  <input
  className="input"
  type="password"
@@ -105,7 +107,7 @@ function CreateUserModal({ open, onClose, onCreated }) {
  />
  </div>
  <div>
- <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Name (optional)</label>
+ <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">{t('users.nameOptional')}</label>
  <input
  className="input"
  value={form.name}
@@ -114,18 +116,18 @@ function CreateUserModal({ open, onClose, onCreated }) {
  </div>
  <div className="grid grid-cols-2 gap-3">
  <div>
- <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Role</label>
+ <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">{t('users.role')}</label>
  <select
  className="select"
  value={form.role}
  onChange={(e) => setForm({ ...form, role: e.target.value })}
  >
- <option value="user">user</option>
- <option value="admin">admin</option>
+ <option value="user">{t('users.roleUser')}</option>
+ <option value="admin">{t('users.roleAdmin')}</option>
  </select>
  </div>
  <div>
- <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">Quota (GB)</label>
+ <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">{t('users.quotaGB')}</label>
  <input
  className="input"
  type="number"
@@ -137,7 +139,7 @@ function CreateUserModal({ open, onClose, onCreated }) {
  </div>
  </div>
  <button type="submit" className="btn-primary w-full justify-center" disabled={busy}>
- <Plus className="h-4 w-4" /> Create user
+ <Plus className="h-4 w-4" /> {t('users.createUser')}
  </button>
  </form>
  </div>
@@ -146,6 +148,7 @@ function CreateUserModal({ open, onClose, onCreated }) {
 }
 
 export default function Users() {
+ const { t } = useTranslation();
  const qc = useQueryClient();
  const me = useAuth((s) => s.user);
  const navigate = useNavigate();
@@ -161,76 +164,75 @@ export default function Users() {
 
  const editName = async (u) => {
  const name = await promptDialog({
- title: 'Edit display name',
+ title: t('users.editName'),
  defaultValue: u.name || '',
- placeholder: 'Leave empty to clear',
- confirmText: 'Save',
+ placeholder: t('users.leaveEmptyClear'),
+ confirmText: t('common.save'),
  });
  if (name === null) return;
  await UserApi.update(u.id, { name: name || undefined });
- toast.success('Name updated');
+ toast.success(t('users.nameUpdated'));
  refresh();
  };
 
  const updateQuota = async (u) => {
  const gbs = await promptDialog({
- title: `Update quota for ${u.email}`,
- message: 'Enter the new storage quota in gigabytes.',
+ title: t('users.updateQuotaTitle', { email: u.email }),
+ message: t('users.updateQuotaMsg'),
  defaultValue: gbInput(u.quotaBytes),
- placeholder: 'e.g. 10',
- confirmText: 'Update',
+ placeholder: t('users.egTen'),
+ confirmText: t('users.update'),
  variant: 'default',
  });
  if (!gbs) return;
  const bytes = Math.round(parseFloat(gbs) * 1024 * 1024 * 1024);
  await UserApi.update(u.id, { quotaBytes: String(bytes) });
  refresh();
- toast.success('Quota updated');
+ toast.success(t('users.quotaUpdated'));
  };
 
  const resetPassword = async (u) => {
  const pwd = await promptDialog({
- title: `Set new password for ${u.email}`,
- message: 'The user will need to log in again with the new password.',
- placeholder: 'min 6 characters',
- confirmText: 'Set password',
+ title: t('users.setPwTitle', { email: u.email }),
+ message: t('users.setPwMsg'),
+ placeholder: t('users.min6'),
+ confirmText: t('users.setPassword'),
  });
  if (!pwd) return;
- if (pwd.length < 6) return toast.error('Password too short');
+ if (pwd.length < 6) return toast.error(t('users.pwTooShort'));
  await UserApi.update(u.id, { password: pwd });
- toast.success('Password updated');
+ toast.success(t('users.pwUpdated'));
  };
 
  const toggleBan = async (u) => {
  if (u.banned) {
  await UserApi.update(u.id, { banned: false });
- toast.success(`Unbanned ${u.email}`);
+ toast.success(t('users.unbannedToast', { email: u.email }));
  refresh();
  return;
  }
  const ok = await confirmDialog({
- title: `Ban ${u.email}?`,
- message:
- 'Banned users cannot log in or access the API. Their files are kept and access can be restored later.',
- confirmText: 'Ban user',
+ title: t('users.banTitle', { email: u.email }),
+ message: t('users.banMsg'),
+ confirmText: t('users.banUser'),
  });
  if (!ok) return;
  await UserApi.update(u.id, { banned: true });
- toast.success(`Banned ${u.email}`);
+ toast.success(t('users.bannedToast', { email: u.email }));
  refresh();
  };
 
  const toggleApprove = async (u) => {
  await UserApi.update(u.id, { approved: !u.approved });
- toast.success(u.approved ? `Approval revoked for ${u.email}` : `Approved ${u.email}`);
+ toast.success(u.approved ? t('users.approveRevoked', { email: u.email }) : t('users.approvedToast', { email: u.email }));
  refresh();
  };
 
  const remove = async (u) => {
  const ok = await confirmDialog({
- title: `Delete user ${u.email}?`,
- message: 'This permanently removes the user and all their files. This cannot be undone.',
- confirmText: 'Delete user',
+ title: t('users.deleteTitle', { email: u.email }),
+ message: t('users.deleteMsg'),
+ confirmText: t('users.deleteUser'),
  });
  if (!ok) return;
  await UserApi.remove(u.id);
@@ -240,22 +242,22 @@ export default function Users() {
  return (
  <div className="p-6">
  <div className="mb-4 flex items-center gap-2">
- <h1 className="text-lg font-semibold">User management</h1>
+ <h1 className="text-lg font-semibold">{t('users.title')}</h1>
  <button className="btn-primary ml-auto" onClick={() => setCreateOpen(true)}>
- <UserPlus className="h-4 w-4" /> Create user
+ <UserPlus className="h-4 w-4" /> {t('users.createUser')}
  </button>
  </div>
  <div className="card overflow-x-auto">
  <table className="w-full min-w-[720px] text-sm">
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
- <th className="px-3 py-2">Username</th>
- <th className="px-3 py-2">Name</th>
- <th className="px-3 py-2">Role</th>
- <th className="px-3 py-2">Status</th>
- <th className="px-3 py-2">Quota</th>
- <th className="px-3 py-2">Used</th>
- <th className="px-3 py-2">Created</th>
+ <th className="px-3 py-2">{t('profile.username')}</th>
+ <th className="px-3 py-2">{t('files.sort.name')}</th>
+ <th className="px-3 py-2">{t('users.thRole')}</th>
+ <th className="px-3 py-2">{t('users.thStatus')}</th>
+ <th className="px-3 py-2">{t('users.thQuota')}</th>
+ <th className="px-3 py-2">{t('users.thUsed')}</th>
+ <th className="px-3 py-2">{t('users.thCreated')}</th>
  <th className="px-3 py-2"></th>
  </tr>
  </thead>
@@ -273,7 +275,7 @@ export default function Users() {
  >
  <td className="px-3 py-2 font-medium text-slate-900 dark:text-slate-100">
  {u.email}
- {isSelf && <span className="ml-2 text-xs font-normal text-slate-400 dark:text-slate-500">(you)</span>}
+ {isSelf && <span className="ml-2 text-xs font-normal text-slate-400 dark:text-slate-500">{t('users.you')}</span>}
  </td>
  <td className="px-3 py-2 text-xs">
  <button
@@ -291,22 +293,22 @@ export default function Users() {
  onChange={(e) => updateRole(u, e.target.value)}
  disabled={isSelf}
  >
- <option value="user">user</option>
- <option value="admin">admin</option>
+ <option value="user">{t('users.roleUser')}</option>
+ <option value="admin">{t('users.roleAdmin')}</option>
  </select>
  </td>
  <td className="px-3 py-2 text-xs">
  {u.banned ? (
  <span className="badge bg-red-100 dark:bg-red-500/20 text-red-700 dark:text-red-300">
- <Ban className="h-3 w-3" /> banned
+ <Ban className="h-3 w-3" /> {t('users.statusBanned')}
  </span>
  ) : u.role !== 'admin' && !u.approved ? (
  <span className="badge bg-amber-100 dark:bg-amber-500/20 text-amber-700 dark:text-amber-300">
- ⏳ pending
+ ⏳ {t('users.statusPending')}
  </span>
  ) : (
  <span className="badge bg-green-100 dark:bg-green-500/20 text-green-700 dark:text-green-300">
- <Check className="h-3 w-3" /> active
+ <Check className="h-3 w-3" /> {t('users.statusActive')}
  </span>
  )}
  </td>
@@ -316,23 +318,23 @@ export default function Users() {
  <td className="px-3 py-2 text-right">
  <div className="flex justify-end">
  <ActionMenu
- label={`Actions for ${u.email}`}
+ label={t('users.actionsFor', { email: u.email })}
  items={[
- { label: 'Browse files', icon: FolderOpen, onClick: () => navigate(`/files?as=${u.id}`) },
- { label: 'Set quota', icon: Gauge, onClick: () => updateQuota(u) },
- { label: 'Reset password', icon: KeyRound, onClick: () => resetPassword(u) },
+ { label: t('users.browseFiles'), icon: FolderOpen, onClick: () => navigate(`/files?as=${u.id}`) },
+ { label: t('users.setQuota'), icon: Gauge, onClick: () => updateQuota(u) },
+ { label: t('users.resetPassword'), icon: KeyRound, onClick: () => resetPassword(u) },
  !isSelf && u.role !== 'admin' && {
- label: u.approved ? 'Revoke approval' : 'Approve',
+ label: u.approved ? t('users.revokeApproval') : t('users.approve'),
  icon: u.approved ? UserX : UserCheck,
  onClick: () => toggleApprove(u),
  },
  !isSelf && {
- label: u.banned ? 'Unban' : 'Ban',
+ label: u.banned ? t('users.unban') : t('users.ban'),
  icon: u.banned ? Check : Ban,
  danger: !u.banned,
  onClick: () => toggleBan(u),
  },
- !isSelf && { label: 'Delete user', icon: Trash2, danger: true, onClick: () => remove(u) },
+ !isSelf && { label: t('users.deleteUser'), icon: Trash2, danger: true, onClick: () => remove(u) },
  ]}
  />
  </div>
@@ -343,7 +345,7 @@ export default function Users() {
  {!(data?.users || []).length && (
  <tr>
  <td colSpan={8} className="px-3 py-8 text-center text-slate-500 dark:text-slate-400">
- No users yet
+ {t('users.empty')}
  </td>
  </tr>
  )}
@@ -352,7 +354,7 @@ export default function Users() {
  </div>
  <div className="mt-3 text-xs text-slate-500 dark:text-slate-400">
  <ShieldCheck className="mr-1 inline h-3.5 w-3.5 align-text-bottom" />
- Self-registered users start as <strong>pending</strong> and must be approved before they can upload. Banned users cannot log in or access the API; their files are preserved.
+ <Trans i18nKey="users.footer"><strong>pending</strong></Trans>
  </div>
  <GroupsCard />
  <CreateUserModal
@@ -367,6 +369,7 @@ export default function Users() {
 // Task5 #14 — teams: share a file/folder to a whole group at once. Admins
 // create groups and manage membership here; the ShareModal picks them up.
 function GroupsCard() {
+ const { t } = useTranslation();
  const qc = useQueryClient();
  const { data } = useQuery({ queryKey: ['groups'], queryFn: () => GroupApi.list() });
  const groups = data?.groups || [];
@@ -382,32 +385,32 @@ function GroupsCard() {
  await GroupApi.create(newName.trim());
  setNewName('');
  refresh();
- toast.success('Group created');
+ toast.success(t('groups.groupCreated'));
  } catch (err) {
- toast.error(err.response?.data?.error || 'Failed to create group');
+ toast.error(err.response?.data?.error || t('groups.createFailed'));
  }
  };
 
  const rename = async (g) => {
  const name = await promptDialog({
- title: 'Rename group',
+ title: t('groups.renameTitle'),
  defaultValue: g.name,
- confirmText: 'Rename',
+ confirmText: t('files.rename'),
  });
  if (!name || name === g.name) return;
  try {
  await GroupApi.rename(g.id, name);
  refresh();
  } catch (err) {
- toast.error(err.response?.data?.error || 'Failed to rename');
+ toast.error(err.response?.data?.error || t('groups.renameFailed'));
  }
  };
 
  const remove = async (g) => {
  const ok = await confirmDialog({
- title: `Delete group "${g.name}"?`,
- message: 'Members lose access to everything shared with this group.',
- confirmText: 'Delete group',
+ title: t('groups.deleteTitle', { name: g.name }),
+ message: t('groups.deleteMsg'),
+ confirmText: t('groups.deleteGroup'),
  });
  if (!ok) return;
  await GroupApi.remove(g.id);
@@ -422,9 +425,9 @@ function GroupsCard() {
  await GroupApi.addMember(g.id, identifier);
  setMemberInput((m) => ({ ...m, [g.id]: '' }));
  refresh();
- toast.success(`Added ${identifier}`);
+ toast.success(t('groups.added', { id: identifier }));
  } catch (err) {
- toast.error(err.response?.data?.error || 'Failed to add member');
+ toast.error(err.response?.data?.error || t('groups.addFailed'));
  }
  };
 
@@ -437,24 +440,24 @@ function GroupsCard() {
  <div className="mt-6">
  <div className="mb-3 flex items-center gap-2">
  <Users2 className="h-5 w-5 text-brand-600 dark:text-brand-400" />
- <h2 className="text-base font-semibold">Groups</h2>
+ <h2 className="text-base font-semibold">{t('groups.title')}</h2>
  </div>
  <div className="card p-4">
  <form onSubmit={create} className="mb-4 flex gap-2">
  <input
  className="input max-w-xs"
- placeholder="New group name"
+ placeholder={t('groups.newGroupName')}
  value={newName}
  maxLength={80}
  onChange={(e) => setNewName(e.target.value)}
  />
  <button type="submit" className="btn-primary shrink-0">
- <Plus className="h-4 w-4" /> Create group
+ <Plus className="h-4 w-4" /> {t('groups.createGroup')}
  </button>
  </form>
  {groups.length === 0 && (
  <div className="py-4 text-center text-sm text-slate-500 dark:text-slate-400">
- No groups yet. Create one to share files with a whole team at once.
+ {t('groups.empty')}
  </div>
  )}
  <div className="space-y-4">
@@ -463,20 +466,20 @@ function GroupsCard() {
  <div className="mb-2 flex items-center gap-2">
  <span className="font-medium text-slate-900 dark:text-slate-100">{g.name}</span>
  <span className="badge bg-slate-100 text-slate-600 dark:bg-slate-700 dark:text-slate-300">
- {g.memberCount} member{g.memberCount === 1 ? '' : 's'}
+ {t('groups.memberCount', { count: g.memberCount })}
  </span>
  <div className="ml-auto flex gap-1">
  <button
  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-700 dark:hover:bg-slate-800 dark:hover:text-slate-200"
  onClick={() => rename(g)}
- title="Rename group"
+ title={t('groups.renameGroup')}
  >
  <Pencil className="h-3.5 w-3.5" />
  </button>
  <button
  className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-600 dark:hover:bg-slate-800"
  onClick={() => remove(g)}
- title="Delete group"
+ title={t('groups.deleteGroup')}
  >
  <Trash2 className="h-3.5 w-3.5" />
  </button>
@@ -492,26 +495,26 @@ function GroupsCard() {
  <button
  onClick={() => removeMember(g, u)}
  className="text-slate-400 hover:text-red-600"
- title="Remove from group"
- aria-label={`Remove ${u.email} from ${g.name}`}
+ title={t('groups.removeFromGroup')}
+ aria-label={t('groups.removeAria', { email: u.email, group: g.name })}
  >
  <UserMinus className="h-3 w-3" />
  </button>
  </span>
  ))}
  {(g.members || []).length === 0 && (
- <span className="text-xs text-slate-400 dark:text-slate-500">No members yet</span>
+ <span className="text-xs text-slate-400 dark:text-slate-500">{t('groups.noMembers')}</span>
  )}
  </div>
  <form onSubmit={(e) => addMember(e, g)} className="flex gap-2">
  <input
  className="input max-w-xs"
- placeholder="Add member by username or email"
+ placeholder={t('groups.addMemberPlaceholder')}
  value={memberInput[g.id] || ''}
  onChange={(e) => setMemberInput((m) => ({ ...m, [g.id]: e.target.value }))}
  />
  <button type="submit" className="btn-secondary shrink-0">
- <UserPlus className="h-4 w-4" /> Add
+ <UserPlus className="h-4 w-4" /> {t('groups.add')}
  </button>
  </form>
  </div>

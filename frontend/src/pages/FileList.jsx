@@ -2,6 +2,7 @@
 // without folders/upload/breadcrumbs — purely a flat list of files.
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { Trash2, Download } from 'lucide-react';
 import { FileApi, AuthApi } from '../api/endpoints.js';
@@ -12,6 +13,7 @@ import ShareModal from '../components/ShareModal.jsx';
 import { confirmDialog, promptDialog } from '../components/Dialog.jsx';
 
 export default function FileList({ title, emptyText, queryKey, queryFn }) {
+ const { t } = useTranslation();
  const qc = useQueryClient();
  const setUser = useAuth((s) => s.setUser);
  const [preview, setPreview] = useState(null);
@@ -41,8 +43,8 @@ export default function FileList({ title, emptyText, queryKey, queryFn }) {
 
  const removeFile = async (file) => {
  const ok = await confirmDialog({
- title: `Move "${file.name}" to trash?`,
- confirmText: 'Trash',
+ title: t('fileList.moveToTrashConfirm', { name: file.name }),
+ confirmText: t('nav.trash'),
  });
  if (!ok) return;
  await FileApi.remove(file.id);
@@ -52,9 +54,9 @@ export default function FileList({ title, emptyText, queryKey, queryFn }) {
 
  const renameFile = async (file) => {
  const name = await promptDialog({
- title: 'Rename file',
+ title: t('fileList.renameFile'),
  defaultValue: file.name,
- confirmText: 'Rename',
+ confirmText: t('files.rename'),
  });
  if (!name || name === file.name) return;
  await FileApi.update(file.id, { name });
@@ -79,17 +81,17 @@ export default function FileList({ title, emptyText, queryKey, queryFn }) {
  setSelected(new Set());
  invalidate();
  refreshUser();
- toast.success('Moved to trash');
+ toast.success(t('fileList.movedToTrash'));
  };
 
  return (
  <div className="p-4 md:p-6">
  <div className="mb-4 flex items-center gap-2">
  <h1 className="text-lg font-semibold">{title}</h1>
- <span className="text-sm text-slate-500 dark:text-slate-400">{files.length} file(s)</span>
+ <span className="text-sm text-slate-500 dark:text-slate-400">{t('fileList.fileCount', { count: files.length })}</span>
  {selected.size > 0 && (
  <button className="btn-danger ml-auto" onClick={bulkTrash}>
- <Trash2 className="h-4 w-4" /> Trash {selected.size}
+ <Trash2 className="h-4 w-4" /> {t('fileList.trashN', { count: selected.size })}
  </button>
  )}
  </div>
@@ -99,10 +101,10 @@ export default function FileList({ title, emptyText, queryKey, queryFn }) {
  <thead className="bg-slate-50 dark:bg-slate-900/60 text-left text-xs uppercase text-slate-500 dark:text-slate-400">
  <tr>
  <th className="px-3 py-2 w-8"></th>
- <th className="px-3 py-2">Name</th>
- <th className="px-3 py-2">Type</th>
- <th className="px-3 py-2">Size</th>
- <th className="px-3 py-2">Modified</th>
+ <th className="px-3 py-2">{t('files.sort.name')}</th>
+ <th className="px-3 py-2">{t('files.sort.type')}</th>
+ <th className="px-3 py-2">{t('files.sort.size')}</th>
+ <th className="px-3 py-2">{t('files.sort.modified')}</th>
  <th className="px-3 py-2"></th>
  </tr>
  </thead>

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { ShieldAlert } from 'lucide-react';
 import { AuditApi } from '../api/endpoints.js';
 import { formatDate } from '../lib/format.js';
@@ -16,6 +17,7 @@ const styleFor = (a) => ACTION_STYLE[a] || 'bg-slate-100 text-slate-600 dark:bg-
 const FILTERS = ['', 'login', 'login_failed', 'user_ban', 'user_role_change', 'user_quota_change', 'share_create', 'password_reset', 'apikey_create'];
 
 export default function Audit() {
+  const { t } = useTranslation();
   const [action, setAction] = useState('');
   const { data, isLoading } = useQuery({
     queryKey: ['audit', action],
@@ -27,11 +29,11 @@ export default function Audit() {
     <div className="p-6">
       <div className="mb-4 flex flex-wrap items-center gap-2">
         <ShieldAlert className="h-5 w-5 text-brand-600 dark:text-brand-400" />
-        <h1 className="text-lg font-semibold">Audit log</h1>
+        <h1 className="text-lg font-semibold">{t('nav.auditLog')}</h1>
         <select className="select-sm ml-auto" value={action} onChange={(e) => setAction(e.target.value)}>
           {FILTERS.map((f) => (
             <option key={f} value={f}>
-              {f || 'All actions'}
+              {f || t('audit.allActions')}
             </option>
           ))}
         </select>
@@ -41,18 +43,18 @@ export default function Audit() {
         <table className="w-full min-w-[720px] text-sm">
           <thead className="bg-slate-50 text-left text-xs uppercase text-slate-500 dark:bg-slate-900/60 dark:text-slate-400">
             <tr>
-              <th className="px-3 py-2">Time</th>
-              <th className="px-3 py-2">Action</th>
-              <th className="px-3 py-2">By</th>
-              <th className="px-3 py-2">Target</th>
-              <th className="px-3 py-2">IP</th>
-              <th className="px-3 py-2">Details</th>
+              <th className="px-3 py-2">{t('audit.thTime')}</th>
+              <th className="px-3 py-2">{t('audit.thAction')}</th>
+              <th className="px-3 py-2">{t('audit.thBy')}</th>
+              <th className="px-3 py-2">{t('audit.thTarget')}</th>
+              <th className="px-3 py-2">{t('audit.thIp')}</th>
+              <th className="px-3 py-2">{t('audit.thDetails')}</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
             {isLoading && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-slate-400">Loading…</td>
+                <td colSpan={6} className="px-3 py-8 text-center text-slate-400">{t('common.loading')}</td>
               </tr>
             )}
             {logs.map((l) => (
@@ -73,7 +75,7 @@ export default function Audit() {
             ))}
             {!isLoading && logs.length === 0 && (
               <tr>
-                <td colSpan={6} className="px-3 py-8 text-center text-slate-400">No audit entries</td>
+                <td colSpan={6} className="px-3 py-8 text-center text-slate-400">{t('audit.empty')}</td>
               </tr>
             )}
           </tbody>

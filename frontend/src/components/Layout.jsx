@@ -19,6 +19,7 @@ import {
  Users2,
  Moon,
  Sun,
+ Languages,
  BarChart3,
  Copy,
  Layers,
@@ -31,6 +32,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../store/auth.js';
 import { useTheme } from '../store/theme.js';
+import { useLocale } from '../store/locale.js';
 import { formatBytes } from '../lib/format.js';
 import { subscribeServerEvents } from '../lib/presence.js';
 import { FolderApi, FileApi, AuthApi } from '../api/endpoints.js';
@@ -61,6 +63,7 @@ export default function Layout() {
  const { t } = useTranslation();
  const { user, logout } = useAuth();
  const { theme, toggle: toggleTheme } = useTheme();
+ const { language, toggleLanguage } = useLocale();
  const navigate = useNavigate();
  const location = useLocation();
  const params = useParams();
@@ -274,15 +277,24 @@ export default function Layout() {
  >
  {theme === 'dark' ? <Sun className="h-3.5 w-3.5" /> : <Moon className="h-3.5 w-3.5" />}
  </button>
+ <button
+ className="flex items-center gap-1 rounded-md border border-slate-300 dark:border-slate-700 px-2 py-1.5 text-[11px] font-semibold uppercase text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+ onClick={toggleLanguage}
+ aria-label={t('nav.toggleLanguage')}
+ title={t('nav.toggleLanguage')}
+ >
+ <Languages className="h-3.5 w-3.5" /> {language}
+ </button>
  </div>
  </div>
  </aside>
  );
 
  return (
- <div className="flex h-[100dvh] bg-slate-50 dark:bg-slate-900/60 text-slate-900">
- {/* Desktop sidebar */}
- <div className="relative hidden md:block">
+ <div className="flex h-[100dvh] bg-slate-50 dark:bg-slate-900/60 text-slate-900 dark:text-slate-200">
+ {/* Desktop sidebar — wrapper gets h-full so the aside's h-full resolves to the
+ full viewport height (otherwise the percentage chain can collapse to content). */}
+ <div className="relative hidden h-full md:block">
  {sidebar}
  {/* Round ">" toggle, vertically centered on the sidebar edge, to reveal the tree */}
  {onFilesPage && !treeOpen && (
@@ -360,6 +372,14 @@ export default function Layout() {
  </div>
  <div className="ml-auto flex items-center gap-1">
  <NotificationBell compact />
+ <button
+ className="rounded px-2 py-2 text-[11px] font-semibold uppercase text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+ onClick={toggleLanguage}
+ aria-label={t('nav.toggleLanguage')}
+ title={t('nav.toggleLanguage')}
+ >
+ {language}
+ </button>
  <button
  className="rounded p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
  onClick={toggleTheme}
