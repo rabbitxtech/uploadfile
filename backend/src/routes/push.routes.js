@@ -5,6 +5,7 @@ import { prisma } from '../config/prisma.js';
 import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
+import { assertPushEndpoint } from '../utils/ssrf.js';
 
 const router = Router();
 
@@ -26,6 +27,9 @@ router.post(
   '/subscribe',
   asyncHandler(async (req, res) => {
     const sub = subSchema.parse(req.body?.subscription ?? req.body);
+    // SSRF guard: the server POSTs to this endpoint via web-push, so reject
+    // non-https / localhost / private / cloud-metadata targets.
+    await assertPushEndpoint(sub.endpoint);
     const data = {
       userId: req.user.id,
       endpoint: sub.endpoint,

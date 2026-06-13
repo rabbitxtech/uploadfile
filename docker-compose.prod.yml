@@ -46,6 +46,12 @@ services:
       SMTP_PASS: ${SMTP_PASS:-}
       SMTP_ALLOW_SELFSIGNED: ${SMTP_ALLOW_SELFSIGNED:-false}
       SMTP_FROM: ${SMTP_FROM:-Uploader <no-reply@rabbitworld.ddns.net>}
+      # Task5 #7 — Web Push. Override the base compose's DEV keypair: set your
+      # own in .env (`npx web-push generate-vapid-keys`). Empty = push disabled
+      # (safer than inheriting the committed dev key). Subject must be your URL.
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
+      VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@rabbitworld.ddns.net}
 
   # Real outgoing mail (opt-in: add `--profile mail`). See docs/mail-setup.md.
   mailserver:
