@@ -86,9 +86,9 @@ services:
       TRASH_RETENTION_DAYS: "30" # auto-purge trashed items older than N days (0 disables)
       ZIP_DOWNLOAD_ENABLED: "false" # temporarily locked: bulk + folder-share ZIP download disabled
       # Task5 #9/#10 — opt-in, CPU-heavy background jobs.
-      HLS_ENABLED: "true"
+      HLS_ENABLED: "false"
       HLS_MIN_MB: "50"
-      WHISPER_ENABLED: "true"
+      WHISPER_ENABLED: "false"
       WHISPER_MODEL: "base"
       WHISPER_LANG: "auto"
       # Task5 #7 — Web Push (PWA). Dev VAPID keypair; generate your own for prod
