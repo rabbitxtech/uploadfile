@@ -1,18 +1,25 @@
-import { lazy, Suspense, useEffect, useState } from 'react';
-import { X, Download, MessageSquare, Send, Trash2, Play, SkipForward } from 'lucide-react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
+import { X, Download, MessageSquare, Send, Trash2, Play, SkipForward, Pencil, Eye } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { FileApi, CommentApi } from '../api/endpoints.js';
 import { api, apiBase } from '../api/client.js';
 import { useAuth } from '../store/auth.js';
 import { formatDate } from '../lib/format.js';
 import { usePresence } from '../lib/presence.js';
+import { confirmDialog } from './Dialog.jsx';
 import VideoPlayer from './VideoPlayer.jsx';
 import AudioPlayer from './AudioPlayer.jsx';
 // Lazy-loaded so their heavy deps (exifr / marked + highlight.js + dompurify)
 // load only when an image or text/code file is actually previewed.
 const ImageLightbox = lazy(() => import('./ImageLightbox.jsx'));
 const TextPreview = lazy(() => import('./TextPreview.jsx'));
+// Task5 #6 — collaborative editor (Yjs + CodeMirror); heavy, so lazy-loaded only
+// when the user clicks Edit on a small text/markdown file.
+const CollabEditor = lazy(() => import('./CollabEditor.jsx'));
+
+const COLLAB_MAX_BYTES = 1024 * 1024; // only offer collab editing for files ≤ 1 MB
 
 const previewLoading = (
   <div className="p-12 text-center text-sm text-slate-500 dark:text-slate-400">Loading…</div>
@@ -272,15 +279,59 @@ function UpNextOverlay({ next, seconds, onPlay, onCancel }) {
 }
 
 export default function PreviewModal({ file, onClose, siblings = [], onNavigate }) {
+  const { t } = useTranslation();
   const me = useAuth((s) => s.user);
   const viewers = usePresence(file?.id); // I4 — who else is viewing this file
   const [inlineUrl, setInlineUrl] = useState(null);
+  const [editing, setEditing] = useState(false);
+  const editorRef = useRef(null);
+
+  // Drop back to read view whenever the previewed file changes.
+  useEffect(() => setEditing(false), [file?.id]);
+
+  // Closing while the editor has unsaved edits warns first (Save & close / Keep
+  // editing). editorRef is null unless the editor is mounted, so this is a no-op
+  // for non-text previews. Kept in a ref so the Esc handler always calls the
+  // latest version without re-binding its listener.
+  const handleClose = async () => {
+    const ed = editorRef.current;
+    if (ed?.isDirty?.()) {
+      const ok = await confirmDialog({
+        variant: 'default',
+        title: t('editor.unsavedTitle'),
+        message: t('editor.unsavedConfirm'),
+        confirmText: t('editor.saveClose'),
+        cancelText: t('editor.keepEditing'),
+      });
+      if (!ok) return; // keep editing
+      try {
+        await ed.save?.();
+      } catch {
+        /* save() surfaces its own toast; close anyway */
+      }
+    }
+    onClose();
+  };
+  const handleCloseRef = useRef(handleClose);
+  handleCloseRef.current = handleClose;
+
+  // Collaborative editing is offered for small text/markdown files the user can
+  // edit (owner, admin, or an explicit edit grant). The save endpoint re-checks
+  // access server-side, so this gate is purely UX.
+  const canEditText =
+    file &&
+    isTextual(file) &&
+    Number(file.size || 0) <= COLLAB_MAX_BYTES &&
+    (file.ownerId === me?.id ||
+      me?.role === 'admin' ||
+      file.permission === 'edit' ||
+      file.accessLevel === 'edit');
 
   // Esc closes the modal (but let Esc exit fullscreen first if active).
   useEffect(() => {
     if (!file) return undefined;
     const onKey = (e) => {
-      if (e.key === 'Escape' && !document.fullscreenElement) onClose();
+      if (e.key === 'Escape' && !document.fullscreenElement) handleCloseRef.current();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -470,7 +521,7 @@ export default function PreviewModal({ file, onClose, siblings = [], onNavigate 
             )}
             <button
               className="rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
-              onClick={onClose}
+              onClick={handleClose}
               title="Close (Esc)"
               aria-label="Close"
             >
@@ -537,9 +588,33 @@ export default function PreviewModal({ file, onClose, siblings = [], onNavigate 
             ) : mime === 'application/pdf' ? (
               <iframe src={inlineUrl} title={file.name} className="h-[72vh] w-full rounded-lg" />
             ) : isTextual(file) ? (
-              <Suspense fallback={previewLoading}>
-                <TextPreview file={file} />
-              </Suspense>
+              <div className="flex flex-col gap-2">
+                {canEditText && (
+                  <div className="mx-auto flex w-full max-w-4xl justify-end">
+                    <button
+                      onClick={() => setEditing((e) => !e)}
+                      className="btn-secondary py-1 text-xs"
+                    >
+                      {editing ? (
+                        <>
+                          <Eye className="h-3.5 w-3.5" /> {t('editor.preview')}
+                        </>
+                      ) : (
+                        <>
+                          <Pencil className="h-3.5 w-3.5" /> {t('editor.edit')}
+                        </>
+                      )}
+                    </button>
+                  </div>
+                )}
+                <Suspense fallback={previewLoading}>
+                  {editing && canEditText ? (
+                    <CollabEditor ref={editorRef} file={file} />
+                  ) : (
+                    <TextPreview file={file} />
+                  )}
+                </Suspense>
+              </div>
             ) : (
               <div className="p-12 text-center text-slate-500 dark:text-slate-400">
                 No preview available for this file type.

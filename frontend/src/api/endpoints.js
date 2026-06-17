@@ -142,6 +142,8 @@ export const FileApi = {
   // Sets an HttpOnly stream cookie (scoped to this file's /stream path); the
   // credential is never put in the URL. withCredentials so the cookie is stored.
   streamToken: (id) => api.get(`/files/${id}/stream-token`, { withCredentials: true }).then((r) => r.data),
+  // Task5 #6 — collaborative editor: persist the current text as a FileVersion.
+  collabSave: (id, text) => api.post(`/files/${id}/collab-save`, { text }).then((r) => r.data),
   getProgress: (id) => api.get(`/files/${id}/progress`).then((r) => r.data),
   saveProgress: (id, position, duration) =>
     api.put(`/files/${id}/progress`, { position, duration }).then((r) => r.data),

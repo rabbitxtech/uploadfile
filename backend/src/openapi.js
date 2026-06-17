@@ -203,6 +203,16 @@ export const openapiDocument = {
       get: { tags: ['Files'], summary: 'List comments', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], responses: { 200: ok } },
       post: { tags: ['Files'], summary: 'Add a comment', security: bearer, parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }], requestBody: jsonBody({ body: { type: 'string' } }, ['body']), responses: { 201: ok } },
     },
+    '/api/files/{id}/collab-save': {
+      post: {
+        tags: ['Files'],
+        summary: 'Save collaborative editor text as a new FileVersion (edit access; Task5 #6)',
+        security: bearer,
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }],
+        requestBody: jsonBody({ text: { type: 'string' } }, ['text']),
+        responses: { 200: ok, 403: { description: 'No edit access' } },
+      },
+    },
     '/api/upload/init': {
       post: { tags: ['Upload'], summary: 'Start a chunked upload', security: bearer, requestBody: jsonBody({ filename: { type: 'string' }, size: { type: 'integer' }, mimeType: { type: 'string' }, folderId: { type: 'string' }, replaceFileId: { type: 'string' } }, ['filename', 'size']), responses: { 201: ok } },
     },

@@ -19,6 +19,7 @@ import {
   objectKeyFor,
   presignedGet,
   putObjectStream,
+  putObjectBuffer,
   removeObject,
 } from '../services/storage.service.js';
 import { addUsage, assertQuota } from '../services/quota.service.js';
@@ -1082,6 +1083,108 @@ router.post(
     if (file.hlsReady) removeHls(file.id).catch(() => {});
     postProcessMedia(file.id, req.file.mimetype);
     res.status(201).json(updated);
+  }),
+);
+
+// Task5 #6 — collaborative editor save. Persists the current editor text as a
+// new FileVersion. Any approved user with EDIT access may save (grantees
+// included) — requireApproved keeps this consistent with the upload/version
+// gate, since a save mints a FileVersion. Quota is charged to the file's owner.
+// Identical content is a no-op (no version), which dedupes concurrent autosaves
+// and protects against version spam.
+const COLLAB_MAX_BYTES = 1024 * 1024;
+// Must stay a superset of the frontend's isTextual() in PreviewModal.jsx — the
+// "Edit" button is only shown for files this accepts, so any drift here means
+// the FE offers editing on a file the save endpoint then 400-rejects.
+const COLLAB_TEXT_MIMES = new Set([
+  'application/json', 'application/javascript', 'application/xml', 'application/x-yaml',
+]);
+const COLLAB_TEXT_EXTS = new Set([
+  'md', 'markdown', 'txt', 'log', 'csv', 'json', 'xml', 'yml', 'yaml', 'toml', 'ini',
+  'html', 'htm', 'css', 'scss', 'less', 'js', 'mjs', 'cjs', 'jsx', 'ts', 'tsx',
+  'py', 'rb', 'go', 'rs', 'java', 'kt', 'c', 'h', 'cpp', 'cc', 'hpp', 'cs', 'php',
+  'sh', 'bash', 'zsh', 'sql', 'swift', 'dart', 'vue', 'dockerfile', 'makefile',
+  'env', 'gitignore', 'conf',
+]);
+function isCollabEditable(file) {
+  const mime = file.mimeType || '';
+  if (mime.startsWith('text/') || COLLAB_TEXT_MIMES.has(mime)) return true;
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  return COLLAB_TEXT_EXTS.has(ext);
+}
+
+router.post(
+  '/:id/collab-save',
+  requireApproved,
+  asyncHandler(async (req, res) => {
+    const { text } = z.object({ text: z.string().max(COLLAB_MAX_BYTES * 2) }).parse(req.body);
+    const file = await prisma.file.findUnique({ where: { id: req.params.id } });
+    if (!file || file.trashedAt) throw notFound('File');
+    const level = await fileAccessLevel(req.user, file);
+    if (!canEdit(level)) throw forbidden();
+    if (!isCollabEditable(file)) throw badRequest('Not an editable text file');
+
+    const buf = Buffer.from(text, 'utf8');
+    if (buf.length > COLLAB_MAX_BYTES) throw badRequest('File too large to save (max 1 MB)');
+    const checksum = sha256Buffer(buf);
+    // Unchanged → don't mint a version (dedupes multi-client autosaves).
+    if (checksum === file.checksum) {
+      return res.json({ ok: true, unchanged: true, version: file.currentVersion });
+    }
+
+    await assertQuota(file.ownerId, buf.length);
+    const ext = file.name.includes('.') ? file.name.split('.').pop() : 'txt';
+    const key = objectKeyFor(file.ownerId, ext);
+    await putObjectBuffer(key, buf, file.mimeType || 'text/plain');
+
+    // Two clients can flush different content for the same file at the same
+    // instant (the close-flush isn't leader-gated). Both would read the same
+    // currentVersion and try to mint the same version number, tripping the
+    // @@unique([fileId, version]) constraint (P2002). Re-read the version inside
+    // a small bounded retry so the loser re-targets the next free number instead
+    // of 500-ing and dropping its edit. The version row + file pointer move
+    // together in one transaction so a partial bump can't leave the file
+    // pointing at a version that doesn't exist.
+    const size = BigInt(buf.length);
+    let nextVersion = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const fresh = await prisma.file.findUnique({
+        where: { id: file.id },
+        select: { currentVersion: true, checksum: true, trashedAt: true },
+      });
+      if (!fresh || fresh.trashedAt) throw notFound('File');
+      // Another writer already saved this exact content → don't mint a dup; the
+      // object we just uploaded is now an orphan, so drop it (best-effort).
+      if (fresh.checksum === checksum) {
+        removeObject(key).catch(() => {});
+        return res.json({ ok: true, unchanged: true, version: fresh.currentVersion });
+      }
+      const candidate = fresh.currentVersion + 1;
+      try {
+        await prisma.$transaction([
+          prisma.fileVersion.create({
+            data: { fileId: file.id, version: candidate, objectKey: key, size, checksum },
+          }),
+          prisma.file.update({
+            where: { id: file.id },
+            data: { objectKey: key, size, checksum, currentVersion: candidate },
+          }),
+        ]);
+        nextVersion = candidate;
+        break;
+      } catch (e) {
+        if (e?.code === 'P2002') continue; // version race — re-read and retry
+        removeObject(key).catch(() => {}); // unexpected failure: don't strand the object
+        throw e;
+      }
+    }
+    if (nextVersion === null) {
+      removeObject(key).catch(() => {});
+      throw new HttpError(409, 'Could not save — too many concurrent edits, try again');
+    }
+    await addUsage(file.ownerId, buf.length);
+    emitFileChange(file.ownerId, file.folderId);
+    res.json({ ok: true, version: nextVersion });
   }),
 );
 
