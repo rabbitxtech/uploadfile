@@ -5,6 +5,7 @@ import { ensureBucket } from './config/minio.js';
 import { logger } from './config/logger.js';
 import { attachPresence } from './realtime/presence.js';
 import { attachCollab } from './realtime/collab.js';
+import { attachGames } from './realtime/games.js';
 import { startRetentionJob } from './services/retention.service.js';
 
 const WEAK_SECRETS = ['dev-secret-change-me', 'change-me-please-use-a-long-random-string'];
@@ -21,6 +22,7 @@ async function main() {
   const server = http.createServer(app);
   attachPresence(server); // WebSocket presence at /ws
   attachCollab(server); // Task5 #6 — Yjs collaborative editing at /yjs/:fileId
+  attachGames(server); // 2D pixel multiplayer games at /gws
   startRetentionJob(); // Task 6 — auto-clean expired trash
   server.listen(env.port, () => {
     logger.info(`API listening on http://localhost:${env.port}`);

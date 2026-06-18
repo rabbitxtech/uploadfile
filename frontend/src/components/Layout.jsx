@@ -28,6 +28,7 @@ import {
  ChevronLeft,
  ChevronRight,
  FolderTree as FolderTreeIcon,
+ Gamepad2,
  WifiOff,
 } from 'lucide-react';
 import { useAuth } from '../store/auth.js';
@@ -225,6 +226,9 @@ export default function Layout() {
  </Item>
  <Item to="/shared-with-me" icon={Users2}>
  {t('nav.sharedWithMe')}
+ </Item>
+ <Item to="/games" icon={Gamepad2}>
+ {t('nav.games')}
  </Item>
  <Item to="/shares" icon={Share2}>
  {t('nav.myShareLinks')}

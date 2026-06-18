@@ -23,6 +23,7 @@ const Stats = lazy(() => import('./pages/Stats.jsx'));
 const Duplicates = lazy(() => import('./pages/Duplicates.jsx'));
 const Collections = lazy(() => import('./pages/Collections.jsx'));
 const CollectionView = lazy(() => import('./pages/CollectionView.jsx'));
+const Games = lazy(() => import('./pages/Games.jsx'));
 
 function Protected({ children, role }) {
   const { token, user } = useAuth();
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="collections" element={<Collections />} />
         <Route path="collections/:id" element={<CollectionView />} />
         <Route path="shared-with-me" element={<SharedWithMe />} />
+        <Route path="games" element={<Games />} />
         <Route path="trash" element={<Trash />} />
         <Route path="shares" element={<Shares />} />
         <Route path="profile" element={<Profile />} />

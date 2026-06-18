@@ -10,9 +10,10 @@ export default defineConfig({
         target: process.env.VITE_API_BASE || 'http://localhost:4000',
         changeOrigin: true,
       },
-      // WebSocket endpoints (presence + Yjs collab) → backend.
+      // WebSocket endpoints (presence + Yjs collab + games) → backend.
       '/ws': { target: process.env.VITE_API_BASE || 'http://localhost:4000', ws: true },
       '/yjs': { target: process.env.VITE_API_BASE || 'http://localhost:4000', ws: true },
+      '/gws': { target: process.env.VITE_API_BASE || 'http://localhost:4000', ws: true },
     },
   },
 });
