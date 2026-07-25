@@ -11,7 +11,7 @@ import {
   Music,
   Video,
 } from 'lucide-react';
-import { GrantApi, FileApi } from '../api/endpoints.js';
+import { GrantApi } from '../api/endpoints.js';
 import { formatBytes, formatDate, fileIcon } from '../lib/format.js';
 import PreviewModal from '../components/PreviewModal.jsx';
 

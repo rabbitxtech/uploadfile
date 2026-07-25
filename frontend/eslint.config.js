@@ -1,5 +1,6 @@
 import js from '@eslint/js';
 import globals from 'globals';
+import react from 'eslint-plugin-react';
 import reactHooks from 'eslint-plugin-react-hooks';
 
 // Lenient config — surfaces real problems (react-hooks rules, obvious errors)
@@ -15,21 +16,26 @@ export default [
       globals: { ...globals.browser, ...globals.node },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
-    plugins: { 'react-hooks': reactHooks },
+    settings: { react: { version: 'detect' } },
+    plugins: { react, 'react-hooks': reactHooks },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // eslint-plugin-react is not installed, so ESLint cannot see that a
-      // capitalised binding is used as a JSX element (`<Icon />`). Both the
-      // vars and the args patterns therefore exempt PascalCase — otherwise
-      // every `({ icon: Icon })` component prop is a false positive, and the
-      // "fix" would be renaming a variable that is genuinely used.
+      // The reason eslint-plugin-react is here at all: jsx-uses-vars marks a
+      // binding as used when it appears as a JSX element. Without it every
+      // `({ icon: Icon })` component prop reads as an unused variable, and the
+      // tempting "fix" is renaming something that is genuinely used.
+      'react/jsx-uses-vars': 'error',
+      'react/jsx-uses-react': 'error',
+      // Real bugs, not style: a key-less list silently breaks reconciliation,
+      // and a mutated prop or a state write during render is a defect.
+      'react/jsx-key': 'error',
+      'react/no-direct-mutation-state': 'error',
+      'react/no-children-prop': 'error',
+      // Deliberately NOT enabled: prop-types (this codebase does not use them)
+      // and react-in-jsx-scope (the automatic JSX runtime makes it obsolete).
       'no-unused-vars': [
         'error',
-        {
-          argsIgnorePattern: '^(_|[A-Z])',
-          varsIgnorePattern: '^[A-Z_]',
-          caughtErrors: 'none',
-        },
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' },
       ],
       'no-empty': ['warn', { allowEmptyCatch: true }],
     },

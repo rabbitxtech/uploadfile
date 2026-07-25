@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
-import { Trash2, Download } from 'lucide-react';
+import { Trash2 } from 'lucide-react';
 import { FileApi, AuthApi } from '../api/endpoints.js';
 import { useAuth } from '../store/auth.js';
 import { FileRow } from '../components/FileRow.jsx';
