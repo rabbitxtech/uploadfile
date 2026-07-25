@@ -2,10 +2,8 @@
 // then send {type:'join'|'leave', fileId}. The server keeps a room per file and
 // broadcasts the de-duplicated list of viewing users to everyone in that room.
 import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env.js';
-import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
+import { authenticateWs } from './wsauth.js';
 import { registerSocket, unregisterSocket } from './bus.js';
 
 export function attachPresence(server) {
@@ -96,14 +94,10 @@ export function attachPresence(server) {
       return socket.destroy();
     }
     if (pathname !== '/ws') return; // not a presence socket
-    if (!token) return socket.destroy();
     try {
-      const payload = jwt.verify(token, env.jwtSecret);
-      const u = await prisma.user.findUnique({
-        where: { id: payload.sub },
-        select: { id: true, name: true, email: true, banned: true },
-      });
-      if (!u || u.banned) return socket.destroy();
+      // Same contract as requireAuth: live session + a real session token only.
+      const u = await authenticateWs(token);
+      if (!u) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (ws) => {
         ws.user = { id: u.id, name: u.name, email: u.email };
         wss.emit('connection', ws, req);

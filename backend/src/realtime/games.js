@@ -28,15 +28,21 @@
 //   chat  {from, text}
 //   error {message}
 import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env.js';
-import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
+import { authenticateWs } from './wsauth.js';
 import { ENGINES, getEngine } from '../services/games/index.js';
 
 const GAMES = new Set(Object.keys(ENGINES));
 const CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no ambiguous O/0/I/1
 const CHAT_MAX = 300;
+// Abuse ceiling. Rooms are freed when their sockets close, but nothing stopped a
+// client from spamming `create`/`createBot` in a loop: every vs-CPU room on a
+// realtime engine (tron ticks every 75ms) starts a setInterval running bot AI,
+// so a single authenticated user could pin a CPU core and exhaust memory.
+// MAX_ROOMS also keeps newCode()'s retry loop far away from saturating the
+// 32^4 (~1.05M) code space, where it would spin forever looking for a free code.
+const MAX_ROOMS = 2000;
+const CHAT_MIN_INTERVAL_MS = 500; // per-socket chat flood guard
 
 export function attachGames(server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -166,9 +172,17 @@ export function attachGames(server) {
     sendRoom(room);
   }
 
+  // True when the server is at capacity; the caller must not create a room.
+  function atCapacity(ws) {
+    if (rooms.size < MAX_ROOMS) return false;
+    send(ws, { type: 'error', message: 'Server is busy, try again shortly' });
+    return true;
+  }
+
   function createRoom(ws, game) {
     leaveRoom(ws);
     leaveQueue(ws);
+    if (atCapacity(ws)) return;
     const engine = getEngine(game);
     const code = newCode();
     const room = { code, game, engine, players: [{ ws, user: ws.user }], state: engine.newState(), loop: null };
@@ -180,6 +194,7 @@ export function attachGames(server) {
   function createBotRoom(ws, game) {
     leaveRoom(ws);
     leaveQueue(ws);
+    if (atCapacity(ws)) return;
     const engine = getEngine(game);
     const code = newCode();
     const room = {
@@ -222,6 +237,7 @@ export function attachGames(server) {
       }
     }
     if (opponent) {
+      if (atCapacity(ws)) return send(opponent, { type: 'error', message: 'Server is busy, try again shortly' });
       if (list.length === 0) queues.delete(game);
       const engine = getEngine(game);
       const code = newCode();
@@ -261,6 +277,10 @@ export function attachGames(server) {
   function chat(ws, text) {
     const room = rooms.get(ws.roomCode);
     if (!room || typeof text !== 'string') return;
+    // Flood guard: without it one socket can spam its opponent's connection.
+    const now = Date.now();
+    if (ws.lastChatAt && now - ws.lastChatAt < CHAT_MIN_INTERVAL_MS) return;
+    ws.lastChatAt = now;
     const clean = text.slice(0, CHAT_MAX);
     if (!clean.trim()) return;
     const from = ws.user.name || ws.user.email;
@@ -345,14 +365,10 @@ export function attachGames(server) {
       return socket.destroy();
     }
     if (pathname !== '/gws') return; // not a games socket — leave it for the others
-    if (!token) return socket.destroy();
     try {
-      const payload = jwt.verify(token, env.jwtSecret);
-      const user = await prisma.user.findUnique({
-        where: { id: payload.sub },
-        select: { id: true, name: true, email: true, banned: true },
-      });
-      if (!user || user.banned) return socket.destroy();
+      // Same contract as requireAuth: live session + a real session token only.
+      const user = await authenticateWs(token);
+      if (!user) return socket.destroy();
       wss.handleUpgrade(req, socket, head, (ws) => {
         ws.user = user;
         wss.emit('connection', ws, req);

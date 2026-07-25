@@ -7,10 +7,9 @@
 // /files/:id/collab-save), so the y-websocket server itself stays a relay.
 import { createRequire } from 'node:module';
 import { WebSocketServer } from 'ws';
-import jwt from 'jsonwebtoken';
-import { env } from '../config/env.js';
 import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
+import { authenticateWs } from './wsauth.js';
 import { getObjectStream } from '../services/storage.service.js';
 import { fileAccessLevel, canEdit } from '../services/access.service.js';
 
@@ -70,14 +69,13 @@ export function attachCollab(server) {
       return socket.destroy();
     }
     if (!fileId) return; // not a collab socket — let other upgrade handlers run
-    if (!token) return socket.destroy();
     try {
-      const payload = jwt.verify(token, env.jwtSecret);
-      const user = await prisma.user.findUnique({
-        where: { id: payload.sub },
-        select: { id: true, name: true, email: true, role: true, banned: true },
+      // Same contract as requireAuth: live session + a real session token only.
+      // Matters most here — the CRDT channel is read-write on file content.
+      const user = await authenticateWs(token, {
+        id: true, name: true, email: true, role: true, banned: true,
       });
-      if (!user || user.banned) return socket.destroy();
+      if (!user) return socket.destroy();
       const file = await prisma.file.findUnique({ where: { id: fileId } });
       if (!file || file.trashedAt) return socket.destroy();
       // EDIT access required — the CRDT channel is read-write for anyone on it.
