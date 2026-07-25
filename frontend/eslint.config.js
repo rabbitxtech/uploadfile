@@ -18,7 +18,19 @@ export default [
     plugins: { 'react-hooks': reactHooks },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^[A-Z_]' }],
+      // eslint-plugin-react is not installed, so ESLint cannot see that a
+      // capitalised binding is used as a JSX element (`<Icon />`). Both the
+      // vars and the args patterns therefore exempt PascalCase — otherwise
+      // every `({ icon: Icon })` component prop is a false positive, and the
+      // "fix" would be renaming a variable that is genuinely used.
+      'no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^(_|[A-Z])',
+          varsIgnorePattern: '^[A-Z_]',
+          caughtErrors: 'none',
+        },
+      ],
       'no-empty': ['warn', { allowEmptyCatch: true }],
     },
   },

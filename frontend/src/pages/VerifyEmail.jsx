@@ -32,7 +32,9 @@ export default function VerifyEmail() {
  }
  })
  .catch(() => setStatus('error'));
- }, [token, setSession, navigate]);
+ // `t` is only read for the toast; the ran.current guard already makes a
+ // re-run a no-op, so including it is safe (the token is single-use).
+ }, [token, setSession, navigate, t]);
 
  return (
  <div className="flex min-h-screen items-center justify-center bg-slate-50 dark:bg-slate-950">
