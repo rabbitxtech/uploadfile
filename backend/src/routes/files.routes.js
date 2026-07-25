@@ -1,5 +1,13 @@
-// Files CRUD, single-shot upload (multer), download, preview, versioning,
-// tags, search, move, and bulk-zip download.
+// Files: single-shot upload (multer), import-from-URL/video, read + presigned
+// URLs, versioning, tags, watch progress, collab-save and bulk operations.
+//
+// Split by concern into ./files/* — this file owns the router and the mount
+// ORDER, which is load-bearing:
+//   1. streamRouter   before requireAuth (authenticates via HttpOnly cookie)
+//   2. requireAuth
+//   3. static paths (/recent, /starred, /analytics, /duplicates, searchRouter)
+//      before any `/:id` route, or Express matches them as an id
+//   4. the `/:id` routes, then commentsRouter
 import { assertUrlAllowed } from '../utils/ssrf.js';
 import fs from 'node:fs';
 import { Router } from 'express';
@@ -11,11 +19,10 @@ import { prisma } from '../config/prisma.js';
 import { env } from '../config/env.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { badRequest, notFound, unauthorized, forbidden, HttpError } from '../utils/errors.js';
+import { badRequest, notFound, forbidden, HttpError } from '../utils/errors.js';
 import { makeThrottle } from '../utils/throttle.js';
 import {
   getObjectStream,
-  getObjectRange,
   objectKeyFor,
   presignedGet,
   putObjectStream,
@@ -28,134 +35,43 @@ import {
   canFaststart,
   optimizeFileVideo,
   canVideoThumbnail,
-  generateVideoThumbnail,
 } from '../services/video.service.js';
 import { fileAccessLevel, canEdit } from '../services/access.service.js';
 import { postProcessMedia } from '../services/media.service.js';
-import { maybeGenerateHls, removeHls, hlsPrefix } from '../services/hls.service.js';
+import { maybeGenerateHls, removeHls } from '../services/hls.service.js';
 import { maybeTranscribe } from '../services/transcribe.service.js';
 import { notify } from '../services/notify.service.js';
 import { emitFileChange } from '../realtime/bus.js';
 import { sha256Buffer, backfillChecksum } from '../services/checksum.service.js';
-import { indexFile, embed, cosine } from '../services/ai.service.js';
-import { pgvectorEnabled, toVectorLiteral } from '../utils/vector.js';
+import { indexFile } from '../services/ai.service.js';
 import { downloadYoutube, isAllowedSource, SUPPORTED_SOURCES, mimeForExt } from '../services/youtube.service.js';
+import { streamRouter } from './files/stream.routes.js';
+import { searchRouter } from './files/search.routes.js';
+import { commentsRouter } from './files/comments.routes.js';
+import {
+  ciContains,
+  readCookie,
+  makeVideoThumb,
+  bumpAccessed,
+  readableFile,
+  ownedWhere,
+  ownerScope,
+  mimeCategory,
+  STREAM_EXPIRY,
+  STREAM_MAX_AGE_MS,
+  STREAM_COOKIE,
+  INLINE_EXPIRY,
+  DOWNLOAD_EXPIRY,
+} from './files/_shared.js';
 
 const router = Router();
-const STREAM_EXPIRY = '3h';
-const STREAM_MAX_AGE_MS = 3 * 60 * 60 * 1000; // keep in sync with STREAM_EXPIRY
-const STREAM_COOKIE = 'stream_tkn';
 
-// Read a single cookie value from the raw header (avoids a cookie-parser dep).
-function readCookie(req, name) {
-  const raw = req.headers.cookie;
-  if (!raw) return null;
-  for (const part of raw.split(';')) {
-    const i = part.indexOf('=');
-    if (i === -1) continue;
-    if (part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
-  }
-  return null;
-}
-
-// Authenticated media streaming (better source protection than a raw presigned
-// MinIO URL): the object never leaves our backend, and every request re-checks
-// access. The stream credential is a short-lived, file+user-bound JWT delivered
-// as an HttpOnly+Secure+SameSite cookie (NOT in the URL) so a plain <video src>
-// works without an Authorization header while staying unshareable and invisible
-// to JS/logs/history. Supports HTTP Range for seeking. This route is mounted
-// BEFORE requireAuth — it does its own token auth — so it must come first.
-// Validate the stream cookie for /:id/stream and /:id/stream/hls/* — both are
-// mounted before requireAuth and authenticate via the HttpOnly cookie instead
-// (browsers can't set Authorization on <video src> / hls.js segment requests).
-async function streamAuth(req) {
-  const token = readCookie(req, STREAM_COOKIE);
-  if (!token) throw unauthorized('Missing stream credential');
-  let payload;
-  try {
-    payload = jwt.verify(token, env.jwtSecret);
-  } catch {
-    throw unauthorized('Invalid or expired stream token');
-  }
-  if (payload.p !== 'stream' || payload.fid !== req.params.id) throw unauthorized('Invalid stream token');
-
-  const user = await prisma.user.findUnique({ where: { id: payload.sub } });
-  if (!user || user.banned) throw forbidden('No access');
-  const file = await prisma.file.findFirst({ where: { id: req.params.id, trashedAt: null } });
-  if (!file) throw notFound('File');
-  const level = await fileAccessLevel(user, file);
-  if (!level) throw notFound('File'); // access revoked since the token was issued
-  return file;
-}
-
-router.get(
-  '/:id/stream',
-  asyncHandler(async (req, res) => {
-    const file = await streamAuth(req);
-
-    const size = Number(file.size);
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Content-Type', file.mimeType);
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
-
-    const range = req.headers.range;
-    if (range) {
-      const m = /bytes=(\d*)-(\d*)/.exec(range);
-      let start = m && m[1] ? parseInt(m[1], 10) : 0;
-      let end = m && m[2] ? parseInt(m[2], 10) : size - 1;
-      if (Number.isNaN(start) || start < 0) start = 0;
-      if (Number.isNaN(end) || end >= size) end = size - 1;
-      if (start > end) {
-        res.status(416).setHeader('Content-Range', `bytes */${size}`);
-        return res.end();
-      }
-      const chunkLen = end - start + 1;
-      res.status(206);
-      res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-      res.setHeader('Content-Length', chunkLen);
-      const stream = await getObjectRange(file.objectKey, start, chunkLen);
-      stream.on('error', () => res.destroy());
-      stream.pipe(res);
-    } else {
-      res.setHeader('Content-Length', size);
-      const stream = await getObjectStream(file.objectKey);
-      stream.on('error', () => res.destroy());
-      stream.pipe(res);
-    }
-    bumpAccessed(file.id);
-  }),
-);
-
-// Task5 #9 — HLS playlists + segments (h/<fileId>/<name> in MinIO), protected
-// by the same stream cookie: its path (/api/files/<id>/stream) covers this
-// subpath, so hls.js requests carry it automatically. Flat layout — playlists
-// reference segments by bare filename, all served from this one directory.
-router.get(
-  '/:id/stream/hls/:name',
-  asyncHandler(async (req, res) => {
-    const file = await streamAuth(req);
-    const { name } = req.params;
-    if (!file.hlsReady || !/^[A-Za-z0-9_-]+\.(m3u8|ts)$/.test(name)) throw notFound('File');
-
-    res.setHeader(
-      'Content-Type',
-      name.endsWith('.m3u8') ? 'application/vnd.apple.mpegurl' : 'video/mp2t',
-    );
-    res.setHeader('Cache-Control', 'private, max-age=3600');
-    const stream = await getObjectStream(hlsPrefix(file.id) + name);
-    stream.on('error', () => res.destroy());
-    stream.pipe(res);
-  }),
-);
+// Stream + HLS live in ./files/stream.routes.js and MUST stay mounted before
+// requireAuth: they authenticate with the stream_tkn HttpOnly cookie because a
+// browser cannot set an Authorization header on <video src>.
+router.use(streamRouter);
 
 router.use(requireAuth);
-
-// Case-insensitive `contains`. Prisma's `mode: 'insensitive'` is PostgreSQL-only;
-// MySQL is already case-insensitive by collation, and SQLite LIKE is too — so we
-// only attach the mode for Postgres and let the others rely on collation.
-const PG = (process.env.DB_PROVIDER || 'postgresql') === 'postgresql';
-const ciContains = (q) => (PG ? { contains: q, mode: 'insensitive' } : { contains: q });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
@@ -223,45 +139,6 @@ router.post(
   }),
 );
 
-// Generate a video poster thumbnail (best-effort, async).
-function makeVideoThumb(fileId, objectKey, mimeType) {
-  generateVideoThumbnail(objectKey, mimeType)
-    .then((thumbKey) => {
-      if (thumbKey) {
-        return prisma.file.update({
-          where: { id: fileId },
-          data: { thumbnailKey: thumbKey, hasPreview: true },
-        });
-      }
-    })
-    .catch((e) => console.warn('[vthumb] failed:', e?.message));
-}
-
-// Bump File.accessedAt asynchronously (best-effort, no await).
-function bumpAccessed(id) {
-  prisma.file.updateMany({ where: { id }, data: { accessedAt: new Date() } }).catch(() => {});
-}
-
-// Fetch a file the user is allowed to read (owner, admin, or granted via
-// file/folder share). Returns { file, level } — file is null if no access.
-async function readableFile(req, include) {
-  const file = await prisma.file.findUnique({ where: { id: req.params.id }, include });
-  if (!file) return { file: null, level: null };
-  const level = await fileAccessLevel(req.user, file);
-  if (!level) return { file: null, level: null };
-  return { file, level };
-}
-
-// Prisma where-filter for write operations: admins act on ANY file/folder,
-// regular users are scoped to what they own.
-function ownedWhere(req, id) {
-  if (req.user.role === 'admin') return { id };
-  return { id, ownerId: req.user.id };
-}
-function ownerScope(req) {
-  return req.user.role === 'admin' ? {} : { ownerId: req.user.id };
-}
-
 // Recently accessed files (preview/download/url touch)
 router.get(
   '/recent',
@@ -288,20 +165,6 @@ router.get(
     res.json({ files });
   }),
 );
-
-// Storage analytics — aggregate the caller's files (admin may pass ?ownerId).
-// Returns: totals, breakdown by media category, largest files, top folders.
-function mimeCategory(mime = '') {
-  if (mime.startsWith('image/')) return 'image';
-  if (mime.startsWith('video/')) return 'video';
-  if (mime.startsWith('audio/')) return 'audio';
-  if (mime === 'application/pdf') return 'pdf';
-  if (mime.startsWith('text/')) return 'document';
-  if (/(word|excel|powerpoint|spreadsheet|presentation|document|officedocument)/.test(mime))
-    return 'document';
-  if (/(zip|rar|7z|tar|gzip|compressed)/.test(mime)) return 'archive';
-  return 'other';
-}
 
 router.get(
   '/analytics',
@@ -703,112 +566,10 @@ router.post(
 );
 
 // Search by name / tag
-router.get(
-  '/search',
-  asyncHandler(async (req, res) => {
-    const q = String(req.query.q || '').trim();
-    const tag = req.query.tag ? String(req.query.tag) : null;
-    if (!q && !tag) return res.json({ files: [] });
-
-    const files = await prisma.file.findMany({
-      where: {
-        ownerId: req.user.id,
-        trashedAt: null,
-        AND: [
-          // K1 — match the file name OR its OCR-extracted text (case-insensitive).
-          q ? { OR: [{ name: ciContains(q) }, { ocrText: ciContains(q) }] } : {},
-          tag ? { tags: { some: { name: tag } } } : {},
-        ],
-      },
-      include: {
-        tags: true,
-        folder: true,
-        owner: { select: { id: true, name: true, email: true } },
-      },
-      orderBy: { updatedAt: 'desc' },
-      take: 100,
-    });
-    res.json({ files });
-  }),
-);
-
-// K4 — semantic search: embed the query and rank files by cosine similarity.
-// Task5 #12 — on PostgreSQL the ranking runs in the database against the
-// pgvector `embeddingVec` column (HNSW index: `ORDER BY <=> LIMIT 30` is an
-// ANN index scan, no full load into Node). mysql/sqlite keep the JS fallback.
-router.get(
-  '/semantic-search',
-  asyncHandler(async (req, res) => {
-    const q = String(req.query.q || '').trim();
-    if (!q) return res.json({ files: [] });
-    const qvec = await embed(q).catch(() => null);
-    if (!qvec) return res.json({ files: [], error: 'Embedding unavailable' });
-
-    const lit = pgvectorEnabled() ? toVectorLiteral(qvec) : null;
-    if (lit) {
-      // Pure ORDER BY … LIMIT keeps the HNSW index scan; the score floor is
-      // applied afterwards in JS so it can't break the index usage.
-      const hits = (
-        await prisma.$queryRaw`
-          SELECT "id", 1 - ("embeddingVec" <=> ${lit}::vector) AS score
-          FROM "File"
-          WHERE "ownerId" = ${req.user.id} AND "trashedAt" IS NULL AND "embeddingVec" IS NOT NULL
-          ORDER BY "embeddingVec" <=> ${lit}::vector
-          LIMIT 30`
-      ).filter((h) => Number(h.score) > 0.2);
-      if (!hits.length) return res.json({ files: [] });
-      const rows = await prisma.file.findMany({
-        where: { id: { in: hits.map((h) => h.id) } },
-        include: { tags: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
-      });
-      const byId = new Map(rows.map((f) => [f.id, f]));
-      return res.json({
-        files: hits.flatMap((h) => {
-          const f = byId.get(h.id);
-          if (!f) return [];
-          const { embedding, ocrText, ...rest } = f;
-          return [{ ...rest, score: Number(Number(h.score).toFixed(3)) }];
-        }),
-      });
-    }
-
-    const files = await prisma.file.findMany({
-      where: { ownerId: req.user.id, trashedAt: null, embedding: { not: null } },
-      include: { tags: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
-    });
-    const ranked = files
-      .map((f) => {
-        let v = null;
-        try {
-          v = JSON.parse(f.embedding);
-        } catch {
-          v = null;
-        }
-        const { embedding, ocrText, ...rest } = f;
-        return { file: rest, score: cosine(qvec, v) };
-      })
-      .filter((x) => x.score > 0.2)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 30);
-    res.json({ files: ranked.map((x) => ({ ...x.file, score: Number(x.score.toFixed(3)) })) });
-  }),
-);
-
-// K1/K4 — (re)index existing files that have no embedding yet (background).
-router.post(
-  '/reindex',
-  asyncHandler(async (req, res) => {
-    const files = await prisma.file.findMany({
-      where: { ownerId: req.user.id, trashedAt: null, embedding: null },
-      select: { id: true },
-      take: 1000,
-    });
-    (async () => {
-      for (const f of files) await indexFile(f.id);
-    })().catch(() => {});
-    res.json({ queued: files.length });
-  }),
-);
+// Search, semantic search and reindex live in ./files/search.routes.js.
+// Mounted here (before the /:id routes) so Express does not match "search"
+// as an id.
+router.use(searchRouter);
 
 router.get(
   '/:id',
@@ -859,8 +620,6 @@ router.get(
 // Inline URLs get a long expiry (6h) because they back in-browser media
 // playback: a long video or seeking after a pause would otherwise hit a 403
 // when the short-lived signature expires mid-stream. Download URLs stay short.
-const INLINE_EXPIRY = 6 * 60 * 60; // 6 hours
-const DOWNLOAD_EXPIRY = 10 * 60; // 10 minutes
 router.get(
   '/:id/url',
   asyncHandler(async (req, res) => {
@@ -1290,81 +1049,7 @@ router.post(
   }),
 );
 
-// ---- Comments (any user with read access can view + add) ----
-router.get(
-  '/:id/comments',
-  asyncHandler(async (req, res) => {
-    const { file } = await readableFile(req);
-    if (!file) throw notFound('File');
-    const comments = await prisma.comment.findMany({
-      where: { fileId: file.id },
-      orderBy: { createdAt: 'asc' },
-      include: { user: { select: { id: true, name: true, email: true } } },
-    });
-    res.json({ comments });
-  }),
-);
-
-router.post(
-  '/:id/comments',
-  asyncHandler(async (req, res) => {
-    const { body } = z.object({ body: z.string().trim().min(1).max(2000) }).parse(req.body);
-    const { file } = await readableFile(req);
-    if (!file) throw notFound('File');
-    const comment = await prisma.comment.create({
-      data: { fileId: file.id, userId: req.user.id, body },
-      include: { user: { select: { id: true, name: true, email: true } } },
-    });
-    // Notify the file owner (if someone else commented)
-    if (file.ownerId !== req.user.id) {
-      notify(file.ownerId, {
-        type: 'comment',
-        title: `${req.user.name || req.user.email} commented on "${file.name}"`,
-        body: body.slice(0, 120),
-        link: '/files',
-      });
-    }
-    // I3 — notify @mentioned users (by username/email), excluding self + owner
-    // (owner already notified above) and de-duplicated.
-    const mentions = [...new Set((body.match(/@([a-zA-Z0-9._-]+)/g) || []).map((m) => m.slice(1)))];
-    if (mentions.length) {
-      const users = await prisma.user.findMany({
-        where: { email: { in: mentions } },
-        select: { id: true },
-      });
-      const already = new Set([req.user.id, file.ownerId]);
-      for (const u of users) {
-        if (already.has(u.id)) continue;
-        already.add(u.id);
-        notify(u.id, {
-          type: 'mention',
-          title: `${req.user.name || req.user.email} mentioned you on "${file.name}"`,
-          body: body.slice(0, 120),
-          link: '/files',
-        });
-      }
-    }
-    res.status(201).json(comment);
-  }),
-);
-
-// Delete a comment (author or file owner or admin)
-router.delete(
-  '/:id/comments/:cid',
-  asyncHandler(async (req, res) => {
-    const comment = await prisma.comment.findUnique({
-      where: { id: req.params.cid },
-      include: { file: { select: { ownerId: true } } },
-    });
-    if (!comment || comment.fileId !== req.params.id) throw notFound('Comment');
-    const allowed =
-      comment.userId === req.user.id ||
-      comment.file.ownerId === req.user.id ||
-      req.user.role === 'admin';
-    if (!allowed) throw notFound('Comment');
-    await prisma.comment.delete({ where: { id: comment.id } });
-    res.json({ ok: true });
-  }),
-);
+// Comments live in ./files/comments.routes.js.
+router.use(commentsRouter);
 
 export default router;
