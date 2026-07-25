@@ -6,13 +6,14 @@
 // numbers the backend expects.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockPost, mockToken } = vi.hoisted(() => ({
+const { mockPost, mockGet, mockToken } = vi.hoisted(() => ({
   mockPost: vi.fn(),
+  mockGet: vi.fn(),
   mockToken: { current: 'test-jwt' },
 }));
 
 vi.mock('./client.js', () => ({
-  api: { post: mockPost },
+  api: { post: mockPost, get: mockGet },
   apiBase: '/api',
 }));
 
@@ -56,6 +57,7 @@ beforeEach(() => {
     }
     return { data: { id: 'file-1', name: 'big.bin' } };
   });
+  mockGet.mockRejectedValue(new Error('no resume stubbed'));
 });
 
 describe('chunkedUpload', () => {
@@ -184,7 +186,7 @@ describe('chunkedUpload', () => {
   it('stops before the next part once the signal is aborted', async () => {
     const controller = new AbortController();
     const calls = [];
-    global.fetch = vi.fn(async (url, opts) => {
+    global.fetch = vi.fn(async (url) => {
       calls.push(Number(new URL(url, 'http://x').searchParams.get('part')));
       controller.abort(); // abort after the first part lands
       return { ok: true, status: 200 };
@@ -214,5 +216,134 @@ describe('chunkedUpload', () => {
     const out = await chunkedUpload(makeFile(10));
 
     expect(out).toEqual({ id: 'file-1', name: 'big.bin' });
+  });
+
+  it('attaches the session id to a part failure so the caller can resume', async () => {
+    installFetch({ failOn: 2 });
+
+    await expect(chunkedUpload(makeFile(250))).rejects.toMatchObject({
+      sessionId: 'sess-1',
+    });
+  });
+});
+
+describe('chunkedUpload — resume', () => {
+  // The backend has always exposed GET /upload/:id (which parts it holds) and
+  // de-duplicates parts by number, but the client ignored it and re-sent every
+  // byte from part 1 on a retry.
+  it('skips the parts the server already has', async () => {
+    mockGet.mockResolvedValue({
+      data: { sessionId: 'sess-9', chunkSize: 100, uploaded: [1, 2], completed: false },
+    });
+    const calls = installFetch();
+
+    await chunkedUpload(makeFile(250), { resumeSessionId: 'sess-9' });
+
+    expect(mockGet).toHaveBeenCalledWith('/upload/sess-9');
+    expect(calls.map((c) => c.part)).toEqual([3]); // only the missing tail
+    expect(mockPost.mock.calls.map((c) => c[0])).toEqual(['/upload/sess-9/complete']);
+  });
+
+  it('counts skipped parts as progress instead of restarting at zero', async () => {
+    mockGet.mockResolvedValue({
+      data: { sessionId: 'sess-9', chunkSize: 100, uploaded: [1, 2], completed: false },
+    });
+    installFetch();
+    const seen = [];
+
+    await chunkedUpload(makeFile(250), {
+      resumeSessionId: 'sess-9',
+      onProgress: (p) => seen.push(p),
+    });
+
+    // 200 bytes were already on the server; the final event must still land on
+    // the true file size rather than reporting 50/250.
+    expect(seen).toEqual([{ uploaded: 250, total: 250, part: 3, parts: 3 }]);
+  });
+
+  it('re-uploads nothing but still completes when every part is present', async () => {
+    mockGet.mockResolvedValue({
+      data: { sessionId: 'sess-9', chunkSize: 100, uploaded: [1, 2, 3], completed: false },
+    });
+    const calls = installFetch();
+
+    await chunkedUpload(makeFile(250), { resumeSessionId: 'sess-9' });
+
+    expect(calls).toHaveLength(0);
+    expect(mockPost.mock.calls.map((c) => c[0])).toEqual(['/upload/sess-9/complete']);
+  });
+
+  it('starts a fresh session when the resume lookup fails', async () => {
+    // Expired or foreign session — must not strand the upload.
+    mockGet.mockRejectedValue(new Error('404'));
+    const calls = installFetch();
+
+    await chunkedUpload(makeFile(250), { resumeSessionId: 'gone' });
+
+    expect(mockPost.mock.calls.map((c) => c[0])).toEqual([
+      '/upload/init',
+      '/upload/sess-1/complete',
+    ]);
+    expect(calls.map((c) => c.part)).toEqual([1, 2, 3]);
+  });
+
+  it('starts a fresh session when the resumed one is already completed', async () => {
+    mockGet.mockResolvedValue({
+      data: { sessionId: 'sess-9', chunkSize: 100, uploaded: [1, 2, 3], completed: true },
+    });
+    const calls = installFetch();
+
+    await chunkedUpload(makeFile(250), { resumeSessionId: 'sess-9' });
+
+    expect(mockPost.mock.calls[0][0]).toBe('/upload/init');
+    expect(calls.map((c) => c.part)).toEqual([1, 2, 3]);
+  });
+
+  it('ignores out-of-range part numbers from the server', async () => {
+    // A stale session for a different (larger) file must not inflate progress
+    // past the real file size.
+    mockGet.mockResolvedValue({
+      data: { sessionId: 'sess-9', chunkSize: 100, uploaded: [1, 99], completed: false },
+    });
+    installFetch();
+    const seen = [];
+
+    await chunkedUpload(makeFile(250), {
+      resumeSessionId: 'sess-9',
+      onProgress: (p) => seen.push(p),
+    });
+
+    expect(seen.at(-1).uploaded).toBe(250);
+  });
+
+  it('does not call the resume endpoint when no session id is given', async () => {
+    installFetch();
+    await chunkedUpload(makeFile(100));
+
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('tags an abort with the session so pause/resume keeps its parts', async () => {
+    const controller = new AbortController();
+    global.fetch = vi.fn(async () => {
+      controller.abort();
+      return { ok: true, status: 200 };
+    });
+
+    // Pausing is an abort; without the session id the resumed upload would
+    // start over from part 1.
+    await expect(
+      chunkedUpload(makeFile(250), { signal: controller.signal }),
+    ).rejects.toMatchObject({ message: 'aborted', sessionId: 'sess-1' });
+  });
+
+  it('tags a mid-request network failure with the session', async () => {
+    global.fetch = vi.fn(async () => {
+      throw new TypeError('Failed to fetch');
+    });
+
+    await expect(chunkedUpload(makeFile(100))).rejects.toMatchObject({
+      sessionId: 'sess-1',
+    });
   });
 });

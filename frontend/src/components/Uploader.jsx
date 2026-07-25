@@ -47,6 +47,9 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  folderId,
  signal: ac.signal,
  replaceFileId: entry.replaceFileId || null,
+ // Set when a previous attempt was paused or failed part-way; the parts
+ // already on the server are then skipped instead of re-sent.
+ resumeSessionId: entry.sessionId || null,
  onProgress: ({ uploaded, total }) => {
  update(entry.id, {
  uploaded,
@@ -62,12 +65,15 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  );
  onUploaded?.(result);
  } catch (e) {
+ // chunkedUpload attaches the session id to a part failure so the next
+ // attempt resumes rather than re-uploading everything that landed.
+ const sessionId = e.sessionId || entry.sessionId || null;
  if (ac.signal.aborted) {
- update(entry.id, { status: 'paused' });
+ update(entry.id, { status: 'paused', sessionId });
  } else {
  // Prefer the server's message (e.g. "Quota exceeded") over a raw status code.
  const msg = e.response?.data?.error || e.serverError || e.message || 'Upload failed';
- update(entry.id, { status: 'error', error: msg });
+ update(entry.id, { status: 'error', error: msg, sessionId });
  toast.error(`${entry.file.name}: ${msg}`);
  }
  }
