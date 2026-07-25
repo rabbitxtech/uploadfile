@@ -24,6 +24,41 @@ jobs:
       - name: Test
         run: npm test
 
+  integration:
+    name: Backend (integration — real Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # Must be the pgvector image: the add_pgvector migration does
+        # CREATE EXTENSION vector, which fails on plain postgres.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install
+        run: npm install --no-audit --no-fund
+      - name: Generate Prisma client
+        run: npx prisma generate
+      - name: Integration test
+        run: npm run test:integration
+        env:
+          TEST_DATABASE_URL: postgresql://test:test@localhost:5432/test
+
   frontend:
     name: Frontend (lint + test + build)
     runs-on: ubuntu-latest
@@ -39,7 +74,6 @@ jobs:
         run: npm install --no-audit --no-fund
       - name: Lint
         run: npm run lint
-        continue-on-error: true
       - name: Test
         run: npm test
       - name: Build
