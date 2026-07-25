@@ -197,7 +197,6 @@ export default function Files() {
  } catch {
  setSort({ key: 'name', dir: 'asc' });
  }
- // eslint-disable-next-line react-hooks/exhaustive-deps
  }, [folderId]);
  const applySort = (key) =>
  setSort((s) => {

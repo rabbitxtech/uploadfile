@@ -408,7 +408,6 @@ export default function VideoPlayer({ src, hlsSrc, name, onEnded, resumeKey, sub
       ref={wrapRef}
       className="video-player group relative mx-auto flex max-h-[72vh] w-full max-w-3xl flex-col rounded-lg bg-black"
     >
-      {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
       <video
         ref={videoRef}
         src={hlsSrc ? undefined : src}
