@@ -1,0 +1,122 @@
+# =============================================================================
+# Production environment — copy to `.env` in the repo root
+#
+#     cp docs/prod-env.example.txt .env
+#
+# Then fill in every value marked REQUIRED. This file is a reviewable template
+# kept in docs/ (the repo's .env* files are excluded from tooling); `.env` itself
+# is gitignored and must never be committed.
+#
+# Used by:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# The prod overlay declares the REQUIRED vars as ${VAR:?}, so Compose ABORTS with
+# a clear error instead of silently deploying a publicly-known default. Even
+# `build` and `config` subcommands need them interpolated.
+# =============================================================================
+
+
+# -----------------------------------------------------------------------------
+# REQUIRED — application secret
+# -----------------------------------------------------------------------------
+# Signs session JWTs. Rotating it invalidates every existing login.
+#   openssl rand -base64 48
+JWT_SECRET=
+
+
+# -----------------------------------------------------------------------------
+# REQUIRED — datastore credentials
+# -----------------------------------------------------------------------------
+# The base compose ships dev defaults (postgres `uploader`, MinIO
+# `minioadmin`/`minioadmin@510`) that are committed to a public repo. Prod must
+# override them.
+#
+# The backend's DATABASE_URL / MINIO_ACCESS_KEY / MINIO_SECRET_KEY interpolate
+# these SAME variables, so setting them here rotates the server and its client
+# together — do not configure the backend credentials separately.
+#
+#   openssl rand -base64 32
+POSTGRES_PASSWORD=
+
+# Avoid the literal `minioadmin`; it is the first value any scanner tries.
+MINIO_ROOT_USER=
+MINIO_ROOT_PASSWORD=
+
+# ⚠ ROTATING ON AN EXISTING DEPLOYMENT
+# POSTGRES_PASSWORD is only applied when the Postgres data volume is FIRST
+# initialised. On a stack that has already run, changing it here will not change
+# the password inside the database — the backend will then fail to connect.
+# To rotate on a live stack:
+#   docker compose exec postgres psql -U uploader -c "ALTER USER uploader WITH PASSWORD '<new>';"
+# then set the same value here and recreate the backend. The MinIO root user has
+# the same constraint. Decide these values BEFORE the first public deploy.
+
+
+# -----------------------------------------------------------------------------
+# Optional — datastore identity (defaults shown; only set if you changed them)
+# -----------------------------------------------------------------------------
+# Not referenced by the prod overlay, so these fall back to the base compose.
+# If you override POSTGRES_USER or POSTGRES_DB, the backend's DATABASE_URL picks
+# the new values up automatically.
+#POSTGRES_USER=uploader
+#POSTGRES_DB=uploader
+
+
+# -----------------------------------------------------------------------------
+# Optional — outgoing mail (password reset + email verification)
+# -----------------------------------------------------------------------------
+# Mail is best-effort: unset means those emails are simply not sent, and no
+# request ever fails because of it.
+#
+# Default (unset SMTP_HOST) targets the bundled docker-mailserver, which only
+# runs with `--profile mail`. In practice a residential/DDNS host fails Gmail's
+# PTR/SPF/DKIM checks, so a relay is recommended — see docs/mail-setup.md.
+#
+# Gmail relay: SMTP_PASS must be a 16-char *App Password* (requires 2-Step
+# Verification on the account), never the account password.
+#SMTP_HOST=smtp.gmail.com
+#SMTP_PORT=587
+#SMTP_SECURE=false
+#SMTP_USER=you@gmail.com
+#SMTP_PASS=
+#SMTP_FROM=Uploader <no-reply@rabbitworld.ddns.net>
+
+# Only for a relay presenting a self-signed certificate. Leave false otherwise —
+# true disables TLS verification for outgoing mail.
+#SMTP_ALLOW_SELFSIGNED=false
+
+# Only used when running the bundled mailserver (`--profile mail`).
+#MAIL_HOSTNAME=mail.rabbitworld.ddns.net
+
+
+# -----------------------------------------------------------------------------
+# Optional — Web Push (PWA notifications)
+# -----------------------------------------------------------------------------
+# The base compose contains a committed DEV keypair; the prod overlay blanks it
+# out, so push stays DISABLED until you generate your own:
+#   npx web-push generate-vapid-keys
+# The private key is a secret — anyone holding it can push to your subscribers.
+#VAPID_PUBLIC_KEY=
+#VAPID_PRIVATE_KEY=
+#VAPID_SUBJECT=mailto:admin@rabbitworld.ddns.net
+
+
+# =============================================================================
+# Pre-deploy checklist
+# =============================================================================
+# 1. Every REQUIRED value above is filled in.
+#
+# 2. Only Caddy is exposed to the host — expect exactly 80, 443, 443/udp:
+#      docker compose -f docker-compose.yml -f docker-compose.prod.yml config \
+#        | grep published
+#    Postgres (5432), MinIO (9000/9001), backend (4000) and frontend nginx (8080)
+#    are published in the BASE compose for local dev and are dropped in prod via
+#    `ports: !override []`. A plain `ports: []` would be merged and leave them
+#    open — never change that tag.
+#
+# 3. DNS rabbitworld.ddns.net → your public IP, and the router forwards 80 + 443
+#    (plus 25/587 only if running the mail profile).
+#
+# 4. `.env` is gitignored — confirm it is not staged:
+#      git status --short .env      # expect no output
+# =============================================================================

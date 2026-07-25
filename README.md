@@ -67,7 +67,8 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Audit log** (admin-viewable) of sensitive actions
 - SSRF guard on upload-from-URL (DNS-resolution check, **re-validated on every redirect hop**)
 - **Content-Security-Policy** enabled (helmet); password-protected shares don't reveal their contents until unlocked
-- Refuses to start in prod without a strong `JWT_SECRET`; redacted structured logs
+- **Revocable sessions enforced on WebSockets too** — every socket (`/ws`, `/yjs`, `/gws`) validates the session row and rejects purpose-scoped tokens, so "log out everywhere" also cuts realtime
+- Refuses to start in prod without a strong `JWT_SECRET`, `POSTGRES_PASSWORD` or MinIO credentials; datastore ports are closed in prod; redacted structured logs
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -85,7 +86,11 @@ Then open:
 
 - Frontend: <http://localhost:8080>
 - Backend API: <http://localhost:4000>
-- MinIO console: <http://localhost:9001> (login: `minioadmin` / `minioadmin`)
+- MinIO console: <http://localhost:9001> (login: `minioadmin` / `minioadmin@510`)
+
+> These are **development defaults only**, published to your host for convenience.
+> The production overlay requires real credentials and closes every one of these
+> ports except Caddy's 80/443 — see [Production deploy](#production-deploy-caddy--automatic-https).
 
 The first account you register becomes `admin`. Versioned migrations are applied automatically on container start via `prisma migrate deploy`.
 
@@ -96,10 +101,47 @@ The dev stack also runs **Mailpit** — outgoing mail (e.g. password resets) is 
 `docker-compose.prod.yml` adds a Caddy reverse proxy that terminates TLS and obtains/renews Let's Encrypt certificates automatically. It currently targets the domain **`rabbitworld.ddns.net`** (edit `Caddyfile` + the prod env to change it).
 
 ```bash
-cp .env.prod.example .env          # set JWT_SECRET (required) etc.
-JWT_SECRET=$(openssl rand -base64 48) \
-  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+cp docs/prod-env.example.txt .env  # annotated template — fill in the REQUIRED values
+docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
+
+### Required secrets (prod refuses to start without them)
+
+The base compose ships dev defaults so `docker compose up` works out of the box.
+The prod overlay declares these as `${VAR:?}`, so an unset value aborts the
+command instead of silently deploying a publicly-known password:
+
+```
+JWT_SECRET             openssl rand -base64 48
+POSTGRES_PASSWORD      openssl rand -base64 32
+MINIO_ROOT_USER        e.g. uploader-prod (not `minioadmin`)
+MINIO_ROOT_PASSWORD    openssl rand -base64 32
+```
+
+The backend's `DATABASE_URL` / `MINIO_ACCESS_KEY` / `MINIO_SECRET_KEY` interpolate
+these **same** variables, so rotating a password updates the server and its client
+together — don't set them in two places.
+
+> **Rotating on an existing deployment:** the Postgres and MinIO data volumes were
+> initialised with the old credentials. `POSTGRES_PASSWORD` only takes effect on a
+> *fresh* volume, so changing it on a running stack requires an `ALTER USER` inside
+> the DB (or a dump/restore); the same applies to MinIO's root user. Plan this
+> before the first public deploy, not after.
+
+### Ports exposed in production
+
+Only Caddy's **80** and **443** reach the host. The prod overlay drops the base
+compose's `5432` (Postgres), `9000`/`9001` (MinIO), `4000` (backend) and `8080`
+(frontend nginx) — those services still talk to each other over the Docker network.
+Verify before going live:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.prod.yml config | grep published
+# expect only: 80, 443, 443/udp
+```
+
+Note this uses `ports: !override []`, **not** `ports: []` — Compose *merges* list
+fields across overlay files, so a plain empty list leaves the published ports intact.
 
 Architecture:
 
@@ -151,8 +193,14 @@ DATABASE_URL                      Prisma connection string (matches DB_PROVIDER)
 MINIO_ENDPOINT / MINIO_PORT       Internal MinIO host (e.g. `minio` in Docker, `localhost` standalone)
 MINIO_PUBLIC_ENDPOINT             Browser-reachable URL for presigned URLs (e.g. http://localhost:9000)
 MINIO_ACCESS_KEY / MINIO_SECRET_KEY
+                                  in Docker these interpolate MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
+                                  so the server and its client rotate together
 MINIO_BUCKET                      defaults to `uploads`
 JWT_SECRET                        rotate this in production (prod refuses weak/default values)
+
+# Docker compose secrets — dev defaults exist, prod REFUSES to start without these
+POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+MINIO_ROOT_USER / MINIO_ROOT_PASSWORD
 JWT_EXPIRES_IN                    e.g. `7d`
 CORS_ORIGIN                       comma-separated allowlist (or `*`)
 DEFAULT_QUOTA_BYTES               default per-user quota for new accounts

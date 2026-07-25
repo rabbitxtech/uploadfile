@@ -7,9 +7,10 @@ services:
     container_name: uploader-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: uploader
-      POSTGRES_PASSWORD: uploader
-      POSTGRES_DB: uploader
+      POSTGRES_USER: ${POSTGRES_USER:-uploader}
+      # Dev default only. docker-compose.prod.yml requires a real value.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uploader}
+      POSTGRES_DB: ${POSTGRES_DB:-uploader}
     ports:
       - "5432:5432"
     volumes:
@@ -26,8 +27,9 @@ services:
     restart: unless-stopped
     command: server /data --console-address ":9001"
     environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin@510
+      # Dev defaults only. docker-compose.prod.yml requires real values.
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin@510}
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -70,12 +72,14 @@ services:
       NODE_ENV: production
       PORT: 4000
       DB_PROVIDER: postgresql
-      DATABASE_URL: postgresql://uploader:uploader@postgres:5432/uploader
+      # Credentials come from the same vars as the postgres/minio services, so a
+      # prod override rotates server AND client together.
+      DATABASE_URL: postgresql://${POSTGRES_USER:-uploader}:${POSTGRES_PASSWORD:-uploader}@postgres:5432/${POSTGRES_DB:-uploader}
       MINIO_ENDPOINT: minio
       MINIO_PORT: 9000
       MINIO_USE_SSL: "false"
-      MINIO_ACCESS_KEY: minioadmin
-      MINIO_SECRET_KEY: minioadmin@510
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin@510}
       MINIO_BUCKET: uploads
       MINIO_PUBLIC_ENDPOINT: http://192.168.2.99:9000
       JWT_SECRET: change-me-please-use-a-long-random-string

@@ -28,7 +28,26 @@ services:
   mailpit:
     profiles: ['dev-only']
 
+  # --- Datastores: real credentials, and NOT reachable from outside Docker. ---
+  # The base compose publishes 5432/9000/9001 to the host for local development.
+  # In prod only Caddy (80/443) may be exposed — Postgres and the MinIO console
+  # must never be internet-facing. `ports: !override []` DROPS the inherited
+  # mappings — a plain `ports: []` would be MERGED with the base list and keep
+  # them published. Containers still reach each other over the compose network.
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set a strong POSTGRES_PASSWORD in your .env}
+    ports: !override []
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?set MINIO_ROOT_USER in your .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?set a strong MINIO_ROOT_PASSWORD in your .env}
+    ports: !override []
+
   backend:
+    # Reached through Caddy → frontend nginx → backend; no direct host port.
+    ports: !override []
     environment:
       NODE_ENV: production
       # Forge-proof: refuse to start prod without a strong secret.
@@ -52,6 +71,11 @@ services:
       VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY:-}
       VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY:-}
       VAPID_SUBJECT: ${VAPID_SUBJECT:-mailto:admin@rabbitworld.ddns.net}
+
+  # Caddy reaches nginx as `frontend:80` over the compose network. Publishing
+  # 8080 as well would serve the whole app over plain HTTP, bypassing TLS.
+  frontend:
+    ports: !override []
 
   # Real outgoing mail (opt-in: add `--profile mail`). See docs/mail-setup.md.
   mailserver:
