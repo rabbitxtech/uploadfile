@@ -7,7 +7,8 @@
 #   ... -f docker-compose.prod.yml --profile mail up -d
 #
 # Prereqs: DNS rabbitworld.ddns.net → your public IP; router forwards 80 + 443
-# (and 25/587 if running mail). Set secrets in a .env file (see .env.prod.example).
+# (and 25/587 if running mail). Set secrets in a .env file — copy the annotated
+# template: cp docs/prod-env.example.txt .env
 services:
   caddy:
     image: caddy:2-alpine
@@ -23,6 +24,15 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
+    # Caddy is the only way in — if it stops serving, the whole site is down with
+    # nothing else to notice. Probed over plain HTTP on the container itself so
+    # the check never depends on the public DNS name or a valid certificate.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   # The dev mail catcher must not run in prod.
   mailpit:

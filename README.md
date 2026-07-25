@@ -31,7 +31,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Trash bin (soft delete + restore + empty + hard delete) with **auto-clean** — items left in trash past a retention window are purged automatically (quota refunded)
 - Bulk operations: trash, move, **bulk rename**, **download as ZIP**
 - List view + image **grid view** (with auto-suggestion when ≥ 50% of files are images)
-- **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and both views are **virtualized** (`@tanstack/react-virtual`), so a folder with thousands of files scrolls smoothly
+- **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and the next page auto-loads on scroll (IntersectionObserver sentinel, with a "Load more" fallback), so a folder with thousands of files stays responsive
 - Recent (recently accessed) and Starred views; **storage analytics** + **duplicate finder**
 
 ### Search & AI (optional, best-effort)
@@ -49,6 +49,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 ### Real-time & access
 - **Presence**: live viewer avatars on a file preview (WebSocket `/ws`)
 - **Server push** on the same socket — notifications and file changes (upload/rename/move/trash from another device or a drop-box) refresh open tabs instantly
+- **Collaborative editing** of text/markdown files (Yjs CRDT over `/yjs`) — multiple people edit at once with colored cursors; saves land as a normal file version, deduplicated by checksum. Requires **edit** access, not just read
 - **WebDAV** mount (`/webdav`, HTTP Basic / API key) — browse storage as a network drive
 - **Protected video streaming**: authenticated `/stream` endpoint with HTTP Range + a short-lived **HttpOnly cookie** credential (never in the URL, so it can't be shared or replayed; MinIO URL never exposed, `nodownload`)
 - **HLS adaptive streaming** (opt-in, `HLS_ENABLED`) — large videos are background-transcoded to a 720p/480p ladder; the player (`hls.js`, native on Safari) adapts to the connection and falls back to the plain stream. Segments are protected by the same stream cookie
@@ -242,12 +243,17 @@ backend/                Express + Prisma + MinIO SDK
   src/
     config/             env, prisma client, minio (internal + public clients), logger
     middleware/         auth (requireAuth + API keys), error handler, rate limiting
-    realtime/           presence.js (viewer presence at /ws), bus.js (server push)
+    realtime/           wsauth.js (shared socket handshake auth — session +
+                        purpose-claim checks), presence.js (viewer presence at
+                        /ws), bus.js (server push), collab.js (Yjs rooms at
+                        /yjs), games.js (arcade at /gws — currently unmounted)
     routes/             auth, files, folders, upload, shares, grants, groups,
-                        collections, trash, users, notifications, keys, audit, webdav
+                        collections, trash, users, notifications, keys, audit,
+                        push (Web Push), webdav
     services/           storage (minio), thumbnail, video, media, hls, transcribe,
-                        youtube (yt-dlp), quota, notify, mail, ai (OCR + embeddings
-                        + pgvector), totp, session, retention, checksum, audit,
+                        youtube (yt-dlp), quota, notify, push, mail, ai (OCR +
+                        embeddings + pgvector), totp, session, retention,
+                        checksum, audit, games/ (per-game rule engines),
                         access (grants — single source of truth, incl. groups)
     utils/              http error helpers, asyncHandler, listquery (pagination),
                         vector (pgvector helpers)
@@ -261,20 +267,25 @@ frontend/               React + Vite + Tailwind + React Query + Zustand (PWA)
     api/                axios client + endpoints, chunked upload (fetch streaming)
     components/         Layout, Uploader, FileRow, FolderTree, Dialog (imperative),
                         PreviewModal, VideoPlayer, AudioPlayer, ImageLightbox,
-                        TextPreview, ShareModal, AddToCollectionModal,
-                        BulkRenameModal, CommandPalette, NotificationBell
+                        TextPreview, CollabEditor (CodeMirror + Yjs, lazy),
+                        ShareModal, AddToCollectionModal, BulkRenameModal,
+                        CommandPalette, NotificationBell, games/ (arcade UI)
     pages/              Login (2FA step), Register, VerifyEmail, Forgot/ResetPassword,
                         Files, Recent, Starred, Trash, Shares, SharedWithMe,
                         Shared (public), Collections, CollectionView, Duplicates,
-                        Stats, Audit, Profile (2FA + sessions), Users (admin + groups)
-    store/              auth (zustand persisted), theme (zustand persisted)
+                        Stats, Audit, Profile (2FA + sessions), Users (admin + groups),
+                        Games (route currently commented out)
+    locales/            en.json / vi.json (kept at strict key parity)
+    store/              auth, theme, locale (all zustand, persisted)
     lib/                format helpers, presence (WS client + server events),
+                        i18n (react-i18next, sync init), push (Web Push opt-in),
                         uid (secure-ctx fallbacks), outbox, shareTarget
 
 docker-compose.yml      Postgres + MinIO + backend + frontend + Mailpit (dev)
 docker-compose.prod.yml Caddy (HTTPS) + prod env + optional docker-mailserver
 Caddyfile               reverse proxy / automatic TLS for the production domain
-docs/                   deploy.md, mail-setup.md
+docs/                   deploy.md, mail-setup.md, dns-mail.md, port.md,
+                        prod-env.example.txt (annotated .env template)
 ```
 
 ## Routing map
@@ -317,7 +328,15 @@ docs/                   deploy.md, mail-setup.md
                        :id DELETE, clear (delete all)
 /webdav                WebDAV (HTTP Basic / API key)
 /ws                    WebSocket presence + server push (?token=&fileId=)
+/yjs/:fileId           WebSocket Yjs collab room (requires edit access; ?token=)
+/gws                   WebSocket games arcade (?token=) — currently disabled;
+                       attachGames() is commented out in server.js
+/api/files/:id/collab-save
+                       save collaborative editor text as a new FileVersion
 ```
+
+All three sockets authenticate through `realtime/wsauth.js` — a live session row
+plus a real session token (purpose-scoped 2FA/stream tokens are rejected).
 
 Interactive API docs (Swagger UI) are served at `/api/docs`.
 
