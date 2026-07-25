@@ -12,12 +12,14 @@ import {
 } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import clsx from 'clsx';
 import QRCode from 'qrcode';
 import { ShareApi, GrantApi, GroupApi } from '../api/endpoints.js';
 import { copyText } from '../lib/uid.js';
 
 export default function ShareModal({ target, onClose }) {
+  const { t } = useTranslation();
   const [tab, setTab] = useState('user'); // 'user' | 'link'
   const [label, setLabel] = useState('');
   const [password, setPassword] = useState('');
@@ -93,7 +95,7 @@ export default function ShareModal({ target, onClose }) {
       setShare(s);
       qc.invalidateQueries({ queryKey: ['shares'] });
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to create share');
+      toast.error(err.response?.data?.error || t('share.createFailed'));
     }
   };
 
@@ -112,7 +114,7 @@ export default function ShareModal({ target, onClose }) {
       }
       qc.invalidateQueries({ queryKey: ['grants', target.fileId || target.folderId] });
     } catch (err) {
-      toast.error(err.response?.data?.error || 'Failed to share');
+      toast.error(err.response?.data?.error || t('share.shareFailed'));
     }
   };
 
@@ -122,7 +124,7 @@ export default function ShareModal({ target, onClose }) {
       else await GrantApi.removeFolder(g.id);
       qc.invalidateQueries({ queryKey: ['grants', target.fileId || target.folderId] });
     } catch (err) {
-      toast.error('Failed to revoke');
+      toast.error(t('share.revokeFailed'));
     }
   };
 
@@ -186,7 +188,7 @@ export default function ShareModal({ target, onClose }) {
             <form onSubmit={submitGrant} className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="block text-xs text-slate-500 dark:text-slate-400">
-                  {granteeType === 'group' ? 'Group' : 'Username or email'}
+                  {granteeType === 'group' ? t('share.group') : t('share.usernameOrEmail')}
                 </label>
                 {groups.length > 0 && (
                   <div className="flex gap-1 text-[11px]">
@@ -276,7 +278,7 @@ export default function ShareModal({ target, onClose }) {
                     <button
                       onClick={() => revoke(g)}
                       className="rounded p-1 text-slate-400 hover:bg-slate-100 hover:text-red-600 dark:hover:bg-slate-700"
-                      title="Revoke"
+                      title={t('share.revoke')}
                     >
                       <Trash2 className="h-3.5 w-3.5" />
                     </button>
@@ -349,7 +351,7 @@ export default function ShareModal({ target, onClose }) {
                     onChange={(e) => setAllowUpload(e.target.checked)}
                   />
                   <span className="text-xs text-slate-600 dark:text-slate-300">
-                    <span className="font-medium text-slate-800 dark:text-slate-100">Allow uploads</span>
+                    <span className="font-medium text-slate-800 dark:text-slate-100">{t('share.allowUploads')}</span>
                     <br />
                     Visitors (no account needed) can upload files into this folder. Uploads count
                     against your quota.

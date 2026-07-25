@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import {
   Search,
@@ -22,6 +23,7 @@ import { FileApi } from '../api/endpoints.js';
 import { useTheme } from '../store/theme.js';
 
 export default function CommandPalette({ open, onClose }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { theme, toggle } = useTheme();
   const [q, setQ] = useState('');
@@ -134,7 +136,7 @@ export default function CommandPalette({ open, onClose }) {
                 onClose();
               }
             }}
-            placeholder="Search files or jump to…"
+            placeholder={t('palette.placeholder')}
             className="w-full bg-transparent py-3 text-sm text-slate-800 outline-none placeholder:text-slate-400 dark:text-slate-100"
           />
           <kbd className="hidden rounded border border-slate-300 px-1.5 py-0.5 text-[10px] text-slate-400 dark:border-slate-600 sm:block">
@@ -143,7 +145,7 @@ export default function CommandPalette({ open, onClose }) {
         </div>
         <div ref={listRef} className="max-h-80 overflow-auto py-1">
           {items.length === 0 && (
-            <div className="px-4 py-6 text-center text-sm text-slate-400">No results</div>
+            <div className="px-4 py-6 text-center text-sm text-slate-400">{t('palette.noResults')}</div>
           )}
           {filteredActions.length > 0 && (
             <div className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wide text-slate-400">

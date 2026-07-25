@@ -650,5 +650,54 @@
     "thIp": "IP",
     "thDetails": "Details",
     "empty": "No audit entries"
+  },
+  "dialog": {
+    "title": "Are you sure?",
+    "promptTitle": "Enter value",
+    "confirm": "Confirm",
+    "ok": "OK",
+    "close": "Close"
+  },
+  "palette": {
+    "placeholder": "Search files or jump to…",
+    "noResults": "No results",
+    "files": "Files",
+    "actions": "Actions",
+    "navigate": "Navigate",
+    "select": "Select",
+    "close": "Close"
+  },
+  "notifications": {
+    "title": "Notifications",
+    "inbox": "Inbox",
+    "empty": "No notifications",
+    "markAllRead": "Mark all as read",
+    "clearAll": "Clear all",
+    "delete": "Delete",
+    "new_one": "{{count}} new",
+    "new_other": "{{count}} new"
+  },
+  "uploader": {
+    "dropToUpload": "Drop files to upload",
+    "uploaded": "Uploaded {{name}}",
+    "replaced": "Replaced {{name}}",
+    "pause": "Pause",
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "dupTitle": "Replace existing file?",
+    "dupMessage": "A file named \"{{name}}\" already exists in this folder.\nReplacing will delete the old file and its versions.",
+    "dupReplace": "Replace",
+    "dupSkip": "Skip",
+    "dupApplyAll_one": "Apply to all {{count}} remaining duplicate",
+    "dupApplyAll_other": "Apply to all {{count}} remaining duplicates"
+  },
+  "share": {
+    "createFailed": "Failed to create share",
+    "shareFailed": "Failed to share",
+    "revokeFailed": "Failed to revoke",
+    "revoke": "Revoke",
+    "group": "Group",
+    "usernameOrEmail": "Username or email",
+    "allowUploads": "Allow uploads"
   }
 }

@@ -650,5 +650,54 @@
     "thIp": "IP",
     "thDetails": "Chi tiết",
     "empty": "Không có mục kiểm toán"
+  },
+  "dialog": {
+    "title": "Bạn có chắc không?",
+    "promptTitle": "Nhập giá trị",
+    "confirm": "Xác nhận",
+    "ok": "OK",
+    "close": "Đóng"
+  },
+  "palette": {
+    "placeholder": "Tìm tệp hoặc nhảy tới…",
+    "noResults": "Không có kết quả",
+    "files": "Tệp",
+    "actions": "Thao tác",
+    "navigate": "Di chuyển",
+    "select": "Chọn",
+    "close": "Đóng"
+  },
+  "notifications": {
+    "title": "Thông báo",
+    "inbox": "Hộp thư",
+    "empty": "Không có thông báo",
+    "markAllRead": "Đánh dấu đã đọc tất cả",
+    "clearAll": "Xoá tất cả",
+    "delete": "Xoá",
+    "new_one": "{{count}} mới",
+    "new_other": "{{count}} mới"
+  },
+  "uploader": {
+    "dropToUpload": "Thả tệp để tải lên",
+    "uploaded": "Đã tải lên {{name}}",
+    "replaced": "Đã thay thế {{name}}",
+    "pause": "Tạm dừng",
+    "retry": "Thử lại",
+    "cancel": "Huỷ",
+    "dupTitle": "Thay thế tệp đã có?",
+    "dupMessage": "Đã có tệp tên \"{{name}}\" trong thư mục này.\nThay thế sẽ xoá tệp cũ và các phiên bản của nó.",
+    "dupReplace": "Thay thế",
+    "dupSkip": "Bỏ qua",
+    "dupApplyAll_one": "Áp dụng cho {{count}} tệp trùng còn lại",
+    "dupApplyAll_other": "Áp dụng cho tất cả {{count}} tệp trùng còn lại"
+  },
+  "share": {
+    "createFailed": "Tạo liên kết chia sẻ thất bại",
+    "shareFailed": "Chia sẻ thất bại",
+    "revokeFailed": "Thu hồi thất bại",
+    "revoke": "Thu hồi",
+    "group": "Nhóm",
+    "usernameOrEmail": "Tên đăng nhập hoặc email",
+    "allowUploads": "Cho phép tải lên"
   }
 }

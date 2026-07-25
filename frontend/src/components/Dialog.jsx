@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Pencil, X } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -27,6 +28,7 @@ export function promptDialog(opts) {
 }
 
 export function DialogHost() {
+ const { t } = useTranslation();
  const [dlg, setDlg] = useState(null);
  const [value, setValue] = useState('');
  const [checked, setChecked] = useState(false);
@@ -105,7 +107,8 @@ export function DialogHost() {
  </div>
  <div className="flex-1">
  <h2 className="text-base font-semibold text-slate-900 dark:text-slate-100">
- {dlg.title || (dlg.kind === 'prompt' ? 'Enter value' : 'Are you sure?')}
+ {/* A caller-supplied title wins; only the fallback is translated. */}
+ {dlg.title || (dlg.kind === 'prompt' ? t('dialog.promptTitle') : t('dialog.title'))}
  </h2>
  {dlg.message && (
  <p className="mt-1 text-sm text-slate-600 dark:text-slate-300 whitespace-pre-line">{dlg.message}</p>
@@ -140,21 +143,21 @@ export function DialogHost() {
  <button
  onClick={() => close(false)}
  className="rounded-md p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-700 dark:hover:text-white"
- aria-label="Close"
+ aria-label={t('dialog.close')}
  >
  <X className="h-4 w-4" />
  </button>
  </div>
  <div className="flex justify-end gap-2 rounded-b-xl bg-slate-50 dark:bg-slate-900/60 px-5 py-3">
  <button className="btn-secondary" onClick={() => close(false)}>
- {dlg.cancelText || 'Cancel'}
+ {dlg.cancelText || t('common.cancel')}
  </button>
  <button
  ref={confirmBtnRef}
  className={isDanger ? 'btn-danger' : 'btn-primary'}
  onClick={accept}
  >
- {dlg.confirmText || (dlg.kind === 'prompt' ? 'OK' : 'Confirm')}
+ {dlg.confirmText || (dlg.kind === 'prompt' ? t('dialog.ok') : t('dialog.confirm'))}
  </button>
  </div>
  </div>

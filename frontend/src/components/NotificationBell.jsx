@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useNavigate } from 'react-router-dom';
+import { useTranslation } from 'react-i18next';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
  Bell,
@@ -48,6 +49,7 @@ function timeAgo(iso) {
 }
 
 export default function NotificationBell({ compact = false }) {
+ const { t } = useTranslation();
  const qc = useQueryClient();
  const navigate = useNavigate();
  const [open, setOpen] = useState(false);
@@ -152,11 +154,11 @@ export default function NotificationBell({ compact = false }) {
  ? 'p-2 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
  : 'flex w-full items-center gap-2 border border-slate-300 dark:border-slate-700 px-2 py-1 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800',
  )}
- aria-label="Notifications"
- title="Notifications"
+ aria-label={t('notifications.title')}
+ title={t('notifications.title')}
  >
  <Bell className={compact ? 'h-5 w-5' : 'h-3.5 w-3.5'} />
- {!compact && <span className="text-xs">Inbox</span>}
+ {!compact && <span className="text-xs">{t('notifications.inbox')}</span>}
  {unread > 0 && (
  <span
  className={clsx(
@@ -179,10 +181,10 @@ export default function NotificationBell({ compact = false }) {
  >
  <div className="flex items-center justify-between border-b border-slate-200 dark:border-slate-800 px-3 py-2">
  <div className="flex items-center gap-2 text-sm font-semibold">
- Notifications
+ {t('notifications.title')}
  {unread > 0 && (
  <span className="rounded-full bg-brand-100 dark:bg-brand-500/20 px-1.5 py-0.5 text-[10px] font-bold text-brand-700 dark:text-brand-400">
- {unread} new
+ {t('notifications.new', { count: unread })}
  </span>
  )}
  </div>
@@ -191,7 +193,7 @@ export default function NotificationBell({ compact = false }) {
  onClick={markAll}
  disabled={unread === 0}
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
- title="Mark all as read"
+ title={t('notifications.markAllRead')}
  >
  <CheckCheck className="h-4 w-4" />
  </button>
@@ -199,7 +201,7 @@ export default function NotificationBell({ compact = false }) {
  onClick={clearAll}
  disabled={items.length === 0}
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 disabled:opacity-30"
- title="Clear all"
+ title={t('notifications.clearAll')}
  >
  <Trash className="h-4 w-4" />
  </button>
@@ -209,7 +211,7 @@ export default function NotificationBell({ compact = false }) {
  {items.length === 0 && (
  <div className="px-3 py-10 text-center text-sm text-slate-500 dark:text-slate-400">
  <Bell className="mx-auto mb-2 h-6 w-6 text-slate-300 dark:text-slate-600" />
- No notifications
+ {t('notifications.empty')}
  </div>
  )}
  {items.map((n) => {
@@ -253,7 +255,7 @@ export default function NotificationBell({ compact = false }) {
  onClick={(e) => remove(e, n)}
  className="invisible mt-1 cursor-pointer rounded p-1 text-slate-400 dark:text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 hover:text-red-600 group-hover:visible"
  role="button"
- aria-label="Delete"
+ aria-label={t('notifications.delete')}
  >
  <Trash className="h-3 w-3" />
  </span>

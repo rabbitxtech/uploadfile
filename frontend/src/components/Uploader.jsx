@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useRef, useState, forwardRef } from 'react';
 import { Upload, X, Pause, Play } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { useTranslation } from 'react-i18next';
 import { chunkedUpload } from '../api/upload.js';
 import { formatBytes } from '../lib/format.js';
 import { confirmDialog } from './Dialog.jsx';
@@ -24,6 +25,7 @@ function makeEntry(file, { replaceFileId = null } = {}) {
 // when the user drags files anywhere over the window. Parent components can
 // trigger the OS file picker through the imperative ref (`pick()`).
 const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFiles = [] }, ref) {
+ const { t } = useTranslation();
  const [entries, setEntries] = useState([]);
  const [dragActive, setDragActive] = useState(false);
  const dragCounter = useRef(0);
@@ -60,8 +62,8 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  update(entry.id, { status: 'done', progress: 100 });
  toast.success(
  entry.replaceFileId
- ? `Replaced ${entry.file.name}`
- : `Uploaded ${entry.file.name}`,
+ ? t('uploader.replaced', { name: entry.file.name })
+ : t('uploader.uploaded', { name: entry.file.name }),
  );
  onUploaded?.(result);
  } catch (e) {
@@ -78,7 +80,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  }
  }
  },
- [folderId, onUploaded],
+ [folderId, onUploaded, t],
  );
 
  const addFiles = useCallback(
@@ -123,13 +125,13 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
 
  const remaining = duplicates.filter((x) => x.file !== f).length;
  const opts = {
- title: 'Replace existing file?',
+ title: t('uploader.dupTitle'),
  message: `A file named "${f.name}" already exists in this folder.\nReplacing will delete the old file and its versions.`,
- confirmText: 'Replace',
- cancelText: 'Skip',
+ confirmText: t('uploader.dupReplace'),
+ cancelText: t('uploader.dupSkip'),
  };
  if (remaining > 0) {
- opts.checkbox = { label: `Apply to all ${remaining} remaining duplicate(s)` };
+ opts.checkbox = { label: t('uploader.dupApplyAll', { count: remaining }) };
  const { ok, checked } = await confirmDialog(opts);
  if (checked) applyAll = ok ? 'replace' : 'skip';
  if (!ok) continue;
@@ -144,7 +146,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  setEntries((cur) => [...cur, ...queued]);
  queued.forEach(startEntry);
  },
- [startEntry, folderId],
+ [startEntry, folderId, t],
  );
 
  useImperativeHandle(
@@ -171,7 +173,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  try {
  const result = await chunkedUpload(item.file, { folderId: item.folderId || null });
  await removeItem(item.id);
- toast.success(`Uploaded ${item.name}`);
+ toast.success(t('uploader.uploaded', { name: item.name }));
  onUploaded?.(result);
  } catch {
  // Still offline / server unreachable — leave it queued for next time.
@@ -181,7 +183,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  flush();
  window.addEventListener('online', flush);
  return () => window.removeEventListener('online', flush);
- }, [onUploaded]);
+ }, [onUploaded, t]);
 
  useEffect(() => {
  const hasFiles = (e) => {
@@ -267,7 +269,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  <div className="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-brand-600/25 backdrop-blur-sm animate-[fadeIn_120ms_ease-out]">
  <div className="rounded-2xl border-4 border-dashed border-brand-500 bg-white/95 px-10 py-12 text-center shadow-2xl dark:bg-slate-800/95">
  <Upload className="mx-auto h-12 w-12 text-brand-600 dark:text-brand-400" />
- <div className="mt-3 text-lg font-semibold text-slate-900 dark:text-slate-100">Drop files to upload</div>
+ <div className="mt-3 text-lg font-semibold text-slate-900 dark:text-slate-100">{t('uploader.dropToUpload')}</div>
  <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
  Large files are chunked &amp; resumable
  </div>
@@ -306,7 +308,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  {entry.status === 'uploading' && (
  <button
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
- title="Pause"
+ title={t('uploader.pause')}
  onClick={() => cancel(entry)}
  >
  <Pause className="h-4 w-4" />
@@ -315,7 +317,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  {(entry.status === 'paused' || entry.status === 'error') && (
  <button
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
- title="Retry"
+ title={t('uploader.retry')}
  onClick={() => startEntry(entry)}
  >
  <Play className="h-4 w-4" />
@@ -323,7 +325,7 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  )}
  <button
  className="rounded p-1 text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
- title="Cancel"
+ title={t('uploader.cancel')}
  onClick={() => dismiss(entry.id)}
  >
  <X className="h-4 w-4" />
