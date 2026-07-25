@@ -203,9 +203,44 @@ function Memory() {
   );
 }
 
+function Rpg() {
+  return (
+    <svg viewBox={VB} className="h-full w-full">
+      <defs>
+        <radialGradient id="rpgbg" cx="50%" cy="40%" r="75%">
+          <stop offset="0%" stopColor="#1b3a2a" /><stop offset="100%" stopColor="#0c1c14" />
+        </radialGradient>
+      </defs>
+      <rect width="64" height="64" fill="url(#rpgbg)" />
+      {/* core shard glow + diamond */}
+      <circle cx="50" cy="20" r="9" fill="#fde047" opacity="0.3" />
+      <rect x="46" y="14" width="9" height="9" rx="1.5" fill="#fbbf24" stroke="#b45309" transform="rotate(45 50 18)" />
+      {/* enemy slime */}
+      <ellipse cx="47" cy="48" rx="7" ry="6" fill="#84cc16" stroke="#16270a" strokeWidth="1.5" />
+      <circle cx="48" cy="47" r="2.4" fill="#fff" /><circle cx="48.6" cy="47" r="1.2" fill="#15240a" />
+      {/* chibi adventurer in a teal coat (avatar.jpg) */}
+      <ellipse cx="22" cy="52" rx="3.4" ry="2" fill="#000" opacity="0.3" />
+      {/* legs */}
+      <ellipse cx="19" cy="48" rx="2.2" ry="3.4" fill="#2b303c" stroke="#13161f" strokeWidth="1.2" />
+      <ellipse cx="25" cy="48" rx="2.2" ry="3.4" fill="#2b303c" stroke="#13161f" strokeWidth="1.2" />
+      {/* dark-red shirt */}
+      <ellipse cx="22" cy="42" rx="5.5" ry="7" fill="#7c1d2b" stroke="#13161f" strokeWidth="1.5" />
+      {/* open teal coat panels + collar */}
+      <path d="M16 36 l5 2 -1 11 -4.5 -1.5 z" fill="#1f7a8c" stroke="#13161f" strokeWidth="1.2" />
+      <path d="M28 36 l-5 2 1 11 4.5 -1.5 z" fill="#1f7a8c" stroke="#13161f" strokeWidth="1.2" />
+      <path d="M17 35 l5 3 5 -3 -2.5 -2.5 -5 0 z" fill="#46b3c2" />
+      {/* head */}
+      <ellipse cx="22" cy="31" rx="8.5" ry="8.8" fill="#f3c79a" stroke="#13161f" strokeWidth="1.5" />
+      {/* black spiky hair */}
+      <path d="M13 30 L14 22 17 27 19 19 22 26 24 18 27 26 29 20 31 27 32 30 28 28 22 26 17 28 z" fill="#222a3a" stroke="#13161f" strokeWidth="1" />
+      <rect x="18.5" y="31" width="2" height="3" fill="#13161f" /><rect x="23.5" y="31" width="2" height="3" fill="#13161f" />
+    </svg>
+  );
+}
+
 const THUMBS = {
   gomoku: Gomoku, pong: Pong, snake: Snake, chess: Chess, tictactoe: TicTacToe,
-  connect4: Connect4, reversi: Reversi, tron: Tron, nim21: Nim21, rps: Rps, memory: Memory,
+  connect4: Connect4, reversi: Reversi, tron: Tron, nim21: Nim21, rps: Rps, memory: Memory, rpg: Rpg,
 };
 
 export default function GameThumb({ game, className = '' }) {

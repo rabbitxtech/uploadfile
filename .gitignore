@@ -35,6 +35,12 @@ postgres-data
 models
 backend/models
 
+# Sprite authoring: raw source art + the one-off tooling that slices it into
+# frontend/public/sprites/. The generated sprite sheets ARE committed; these
+# inputs are local-only.
+image
+scripts
+
 # Local dev SQLite database
 backend/prisma/migrations/dev.db*
 backend/prisma/*.db

@@ -2,13 +2,13 @@
 // code / link), quick-match a stranger, or join by code. Rooms run over the /gws
 // socket (server-authoritative). Caro/Gomoku is playable today; Pong, Snake and
 // Chess are scaffolded as "coming soon" so the page is ready to grow into them.
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import {
   Gamepad2, Users, Plus, Zap, LogIn, Copy, Link as LinkIcon,
-  RotateCcw, DoorOpen, Send, Wifi, WifiOff, Loader2, Bot,
+  RotateCcw, DoorOpen, Send, Wifi, WifiOff, Loader2, Bot, Swords,
 } from 'lucide-react';
 import { useGameClient } from '../lib/games.js';
 import { copyText } from '../lib/uid.js';
@@ -25,7 +25,11 @@ import RpsBoard from '../components/games/RpsBoard.jsx';
 import MemoryBoard from '../components/games/MemoryBoard.jsx';
 import GameThumb from '../components/games/GameThumb.jsx';
 
+// Single-player adventure (no room / WebSocket) — heavy, so lazy-loaded.
+const RpgGame = lazy(() => import('../components/games/rpg/RpgGame.jsx'));
+
 const CATALOG = [
+  { id: 'rpg', ready: true, solo: true },
   { id: 'gomoku', ready: true },
   { id: 'tictactoe', ready: true },
   { id: 'connect4', ready: true },
@@ -45,7 +49,8 @@ export default function Games() {
   const [params, setParams] = useSearchParams();
   const [room, setRoom] = useState(null);
   const [waiting, setWaiting] = useState(null); // game id while matchmaking
-  const [active, setActive] = useState('gomoku'); // selected lobby game
+  const [active, setActive] = useState('rpg'); // selected lobby game
+  const [solo, setSolo] = useState(null); // single-player game id (e.g. 'rpg')
   const [code, setCode] = useState('');
   const [chat, setChat] = useState([]);
   const [chatInput, setChatInput] = useState('');
@@ -98,8 +103,18 @@ export default function Games() {
 
   const shareLink = room ? `${location.origin}/games?room=${room.code}` : '';
 
+  // ---- Single-player adventure (takes over the page, no room) --------------
+  if (solo === 'rpg') {
+    return (
+      <Suspense fallback={<div className="py-20 text-center text-sm text-slate-400">{t('games.conn.connecting')}</div>}>
+        <RpgGame onExit={() => setSolo(null)} />
+      </Suspense>
+    );
+  }
+
   // ---- Lobby ---------------------------------------------------------------
   if (!room && !waiting) {
+    const activeSolo = CATALOG.find((c) => c.id === active)?.solo;
     return (
       <div className="mx-auto max-w-5xl">
         <h1 className="mb-1 flex items-center gap-2 text-xl font-semibold text-slate-900 dark:text-slate-100">
@@ -133,40 +148,53 @@ export default function Games() {
         <div className="rounded-xl border border-slate-200 bg-white p-4 dark:border-slate-700 dark:bg-slate-800">
           <div className="mb-3 flex items-center gap-2 text-sm font-medium text-slate-700 dark:text-slate-200">
             {t('games.play', { game: t(`games.catalog.${active}`) })}
-            <span className="ml-auto inline-flex items-center gap-1 text-xs text-slate-400">
-              {status === 'online' ? <Wifi className="h-3.5 w-3.5 text-emerald-500" /> : <WifiOff className="h-3.5 w-3.5 text-amber-500" />}
-              {t(`games.conn.${status}`)}
-            </span>
+            {!activeSolo && (
+              <span className="ml-auto inline-flex items-center gap-1 text-xs text-slate-400">
+                {status === 'online' ? <Wifi className="h-3.5 w-3.5 text-emerald-500" /> : <WifiOff className="h-3.5 w-3.5 text-amber-500" />}
+                {t(`games.conn.${status}`)}
+              </span>
+            )}
           </div>
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <button onClick={() => client?.send({ type: 'createBot', game: active })} className="btn-primary flex-1 justify-center" disabled={status !== 'online'}>
-              <Bot className="h-4 w-4" /> {t('games.playVsCpu')}
-            </button>
-            <button onClick={() => client?.send({ type: 'quickmatch', game: active })} className="btn-secondary flex-1 justify-center" disabled={status !== 'online'}>
-              <Zap className="h-4 w-4" /> {t('games.quickMatch')}
-            </button>
-            <button onClick={() => client?.send({ type: 'create', game: active })} className="btn-secondary flex-1 justify-center" disabled={status !== 'online'}>
-              <Plus className="h-4 w-4" /> {t('games.createRoom')}
-            </button>
-          </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (code.trim()) client?.send({ type: 'join', code: code.trim().toUpperCase() });
-            }}
-            className="mt-3 flex gap-2"
-          >
-            <input
-              value={code}
-              onChange={(e) => setCode(e.target.value.toUpperCase())}
-              maxLength={4}
-              placeholder={t('games.codePlaceholder')}
-              className="input w-32 text-center font-mono tracking-widest"
-            />
-            <button type="submit" className="btn-secondary" disabled={status !== 'online' || !code.trim()}>
-              <LogIn className="h-4 w-4" /> {t('games.joinRoom')}
-            </button>
-          </form>
+          {activeSolo ? (
+            <div>
+              <p className="mb-3 text-sm text-slate-500 dark:text-slate-400">{t('games.rpg.intro')}</p>
+              <button onClick={() => setSolo(active)} className="btn-primary w-full justify-center sm:w-auto">
+                <Swords className="h-4 w-4" /> {t('games.rpg.start')}
+              </button>
+            </div>
+          ) : (
+            <>
+              <div className="flex flex-col gap-3 sm:flex-row">
+                <button onClick={() => client?.send({ type: 'createBot', game: active })} className="btn-primary flex-1 justify-center" disabled={status !== 'online'}>
+                  <Bot className="h-4 w-4" /> {t('games.playVsCpu')}
+                </button>
+                <button onClick={() => client?.send({ type: 'quickmatch', game: active })} className="btn-secondary flex-1 justify-center" disabled={status !== 'online'}>
+                  <Zap className="h-4 w-4" /> {t('games.quickMatch')}
+                </button>
+                <button onClick={() => client?.send({ type: 'create', game: active })} className="btn-secondary flex-1 justify-center" disabled={status !== 'online'}>
+                  <Plus className="h-4 w-4" /> {t('games.createRoom')}
+                </button>
+              </div>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  if (code.trim()) client?.send({ type: 'join', code: code.trim().toUpperCase() });
+                }}
+                className="mt-3 flex gap-2"
+              >
+                <input
+                  value={code}
+                  onChange={(e) => setCode(e.target.value.toUpperCase())}
+                  maxLength={4}
+                  placeholder={t('games.codePlaceholder')}
+                  className="input w-32 text-center font-mono tracking-widest"
+                />
+                <button type="submit" className="btn-secondary" disabled={status !== 'online' || !code.trim()}>
+                  <LogIn className="h-4 w-4" /> {t('games.joinRoom')}
+                </button>
+              </form>
+            </>
+          )}
         </div>
       </div>
     );

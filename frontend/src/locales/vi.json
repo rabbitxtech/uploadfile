@@ -140,7 +140,21 @@
       "tron": "Tron (mô-tô ánh sáng)",
       "nim21": "Nim 21 que",
       "rps": "Oẳn tù tì",
-      "memory": "Lật hình ghi nhớ"
+      "memory": "Lật hình ghi nhớ",
+      "rpg": "RabbitWorld Saga"
+    },
+    "rpg": {
+      "intro": "Phiêu lưu chơi đơn. Khám phá Rừng Tệp Tin, đánh bại quái dữ liệu và hạ boss để giành Mảnh Lõi.",
+      "start": "Bắt đầu phiêu lưu",
+      "exit": "Rời đi",
+      "controls": "Di chuyển: WASD / mũi tên · J đánh · Space nhảy · Shift chạy · K lướt · U I O P kỹ năng · Esc tạm dừng",
+      "victory": "Đã giành Mảnh Lõi!",
+      "shardGot": "Bạn đã khôi phục một mảnh của Lõi.",
+      "defeat": "Bạn đã gục ngã…",
+      "retry": "Thử lại",
+      "paused": "Tạm dừng",
+      "resume": "Tiếp tục",
+      "cleared": "Đã phá đảo"
     },
     "nim": {
       "left": "Còn {{n}} que",

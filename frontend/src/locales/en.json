@@ -140,7 +140,21 @@
       "tron": "Tron",
       "nim21": "Nim 21",
       "rps": "Rock Paper Scissors",
-      "memory": "Memory Match"
+      "memory": "Memory Match",
+      "rpg": "RabbitWorld Saga"
+    },
+    "rpg": {
+      "intro": "Solo adventure. Explore Rừng Tệp Tin, fight corrupted data and defeat the boss to claim the Core Shard.",
+      "start": "Start adventure",
+      "exit": "Leave",
+      "controls": "Move: WASD / arrows · J attack · Space jump · Shift run · K dash · U I O P skills · Esc pause",
+      "victory": "Core Shard claimed!",
+      "shardGot": "You restored a fragment of the Core.",
+      "defeat": "You fell…",
+      "retry": "Try again",
+      "paused": "Paused",
+      "resume": "Resume",
+      "cleared": "Cleared"
     },
     "nim": {
       "left": "{{n}} sticks left",
