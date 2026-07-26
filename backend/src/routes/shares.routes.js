@@ -95,7 +95,7 @@ router.get(
       },
     });
     if (!share) throw notFound('Share');
-    assertShareTargetLive(share);
+    await assertShareTargetLive(share);
     if (share.expiresAt && share.expiresAt < new Date()) throw forbidden('Share expired');
     if (share.maxDownloads && share.downloads >= share.maxDownloads) {
       throw forbidden('Share download limit reached');
@@ -141,20 +141,39 @@ router.post(
 );
 
 /**
- * A share on a single file must stop working once that file is trashed —
- * trashing is the user's "un-share it" action, and the folder-share listing has
- * always filtered trashed files out. Treated as 404 (not 403) to match how the
- * rest of the public surface refuses to confirm what a token points at.
+ * A share must stop working once its target is trashed — trashing is the user's
+ * "un-share it" action. Treated as 404 (not 403) to match how the rest of the
+ * public surface refuses to confirm what a token points at.
  *
- * `share.file` must be loaded by the caller. Distinguishing "not included" from
- * "row is gone" matters: reading a missing relation as a dead file would 404
- * every *live* file share made through a caller that didn't `include` it, so
- * that mistake fails closed on the wrong side. Throw instead — it turns a
- * future caller's missing `include` into a loud 500 during development rather
- * than a share link that mysteriously stops resolving in production.
+ * `share.file` must be loaded by the caller for a FILE share. Distinguishing
+ * "not included" from "row is gone" matters: reading a missing relation as a
+ * dead file would 404 every *live* file share made through a caller that didn't
+ * `include` it, so that mistake fails closed on the wrong side. Throw instead —
+ * it turns a future caller's missing `include` into a loud 500 during
+ * development rather than a share link that mysteriously stops resolving in
+ * production.
+ *
+ * A FOLDER share owes the same rule, and the listing filter is NOT a substitute
+ * for it. Trashing a folder stamps its files trashed too, so the listing does
+ * come back empty — but the link itself stayed alive: it kept resolving, kept
+ * reporting the folder's name and path, and (for an `allowUpload` drop-box)
+ * kept ACCEPTING anonymous uploads into a folder the owner had deleted, where
+ * the new file lands live inside a trashed parent and so is reachable from
+ * neither the file listing nor the trash view — the same unreachable-row state
+ * the restore-ancestor walk exists to prevent, except here anyone holding the
+ * link can create it. The folder is a separate row that has to be read, so this
+ * is async; the file branch stays a pure check on the included relation.
  */
-function assertShareTargetLive(share) {
-  if (!share.fileId) return; // folder share — the listing filters trashed files
+async function assertShareTargetLive(share) {
+  if (share.folderId) {
+    const folder = await prisma.folder.findFirst({
+      where: { id: share.folderId, trashedAt: null },
+      select: { id: true },
+    });
+    if (!folder) throw notFound('Share');
+    return;
+  }
+  if (!share.fileId) return;
   if (share.file === undefined) {
     throw new Error('assertShareTargetLive: share.file was not included by the caller');
   }
@@ -163,7 +182,7 @@ function assertShareTargetLive(share) {
 
 async function authorizeShare(share, providedPassword) {
   if (!share) throw notFound('Share');
-  assertShareTargetLive(share);
+  await assertShareTargetLive(share);
   if (share.expiresAt && share.expiresAt < new Date()) throw forbidden('Share expired');
   if (share.maxDownloads != null && share.downloads >= share.maxDownloads) {
     throw forbidden('Share download limit reached');
@@ -254,6 +273,12 @@ router.post(
     const share = await prisma.share.findUnique({ where: { token: req.params.token } });
     if (!share) throw notFound('Share');
     if (!share.allowUpload || !share.folderId) throw forbidden('Uploads not allowed for this link');
+    // Same liveness rule the read paths apply: a drop-box on a trashed folder
+    // must not keep accepting anonymous uploads. The folder lookup below already
+    // filters `trashedAt: null`, but it 404s AFTER the password check and the
+    // per-share caps, so run the shared assertion first and refuse identically
+    // to every other dead-target case.
+    await assertShareTargetLive(share);
     if (share.expiresAt && share.expiresAt < new Date()) throw forbidden('Share expired');
     if (share.password) {
       const ok = req.body?.password && (await bcrypt.compare(req.body.password, share.password));

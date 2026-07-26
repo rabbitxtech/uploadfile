@@ -238,8 +238,18 @@ router.patch(
     let parentPath = '/';
     if (data.parentId !== undefined) {
       if (data.parentId === cur.id) throw badRequest('Cannot move folder into itself');
+      // `trashedAt: null` for the same reason POST / refuses a trashed parent: a
+      // live folder inside a trashed one is listed by neither view. GET
+      // /api/folders filters `trashedAt: null`, so the ancestor is hidden and
+      // there is no path to browse through it, while GET /api/trash lists
+      // `trashedAt: { not: null }`, so the moved folder is not there either — it
+      // and everything under it just disappear, still billed, with no error. The
+      // create route was gated and this one was not, so the UI's drag-and-drop
+      // move was the way in.
       const parent = data.parentId
-        ? await prisma.folder.findFirst({ where: { id: data.parentId, ownerId: scopeOwner } })
+        ? await prisma.folder.findFirst({
+            where: { id: data.parentId, ownerId: scopeOwner, trashedAt: null },
+          })
         : null;
       if (data.parentId && !parent) throw notFound('Parent folder');
       // Prevent moving into a descendant
