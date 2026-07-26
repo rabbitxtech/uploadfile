@@ -1016,18 +1016,47 @@ router.post(
     const { ids, folderId } = z
       .object({ ids: z.array(z.string()).min(1), folderId: z.string().nullable() })
       .parse(req.body);
+    // Resolve the files first: the destination has to be validated against each
+    // FILE's owner, not against the caller. `ownerScope` is `{}` for an admin, so
+    // checking the folder that way let an admin move one user's files into a
+    // THIRD user's folder — the row keeps its original ownerId, but it now sits
+    // in someone else's tree, where that owner and their folder grantees can
+    // read it. The single-file PATCH already scopes the target folder to
+    // `ownerId: file.ownerId`; this is the same rule applied in bulk.
+    //
+    // Trashed files are excluded, as every other bulk operation does (bulk/trash,
+    // bulk/rename and bulk/zip all filter `trashedAt: null`). Moving one
+    // relocated an item the listing hides, so it silently reappeared in a folder
+    // the user never put it in when they later restored it.
+    const files = await prisma.file.findMany({
+      where: { id: { in: ids }, ...ownerScope(req), trashedAt: null },
+      select: { id: true, ownerId: true, folderId: true },
+    });
+    if (files.length === 0) return res.json({ count: 0 });
+
     if (folderId) {
-      // Admin can target any folder; users only their own.
-      const f = await prisma.folder.findFirst({
-        where: { id: folderId, ...ownerScope(req), trashedAt: null },
+      const owners = [...new Set(files.map((f) => f.ownerId))];
+      const dest = await prisma.folder.findFirst({
+        where: { id: folderId, trashedAt: null },
+        select: { ownerId: true },
       });
-      if (!f) throw notFound('Folder');
+      if (!dest) throw notFound('Folder');
+      // A single move cannot span owners, and never crosses into a tree the
+      // files' owner does not own.
+      if (owners.length > 1 || owners[0] !== dest.ownerId) throw notFound('Folder');
     }
+
     const r = await prisma.file.updateMany({
-      where: { id: { in: ids }, ...ownerScope(req) },
+      where: { id: { in: files.map((f) => f.id) } },
       data: { folderId },
     });
-    if (r.count) emitFileChange(req.user.id, folderId);
+    // Refresh both the source folders and the destination for every viewer.
+    for (const owner of new Set(files.map((f) => f.ownerId))) {
+      for (const src of new Set(files.filter((f) => f.ownerId === owner).map((f) => f.folderId))) {
+        emitFileChange(owner, src);
+      }
+      emitFileChange(owner, folderId);
+    }
     res.json({ count: r.count });
   }),
 );

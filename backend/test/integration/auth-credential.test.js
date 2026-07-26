@@ -61,6 +61,10 @@ beforeEach(async () => {
   await makeUser({ role: 'admin' });
 });
 
+afterAll(async () => {
+  await disconnect();
+});
+
 const register = (email) =>
   request(app).post('/api/auth/register').send({ email, password: PASSWORD });
 const login = (email) =>
