@@ -147,6 +147,41 @@ describe('credential lookup is case-tolerant for stored emails', () => {
     expect(asLower.body.user.id).toBe(lower.id);
   });
 
+  // Adding a group member is a by-identifier lookup like the rest, so it owed
+  // the same rule: an admin typing a self-registered member's address the way
+  // its owner writes it got a bare 404 "User", with nothing to suggest that
+  // only the lowercase spelling resolves.
+  it('adds a group member by the address as the user spells it', async () => {
+    const { makeUser: mkUser, login: signIn } = await import('../helpers/fixtures.js');
+    const admin = await mkUser({ role: 'admin' });
+    const { auth } = await signIn(admin);
+
+    const typed = 'Grace@Example.com';
+    await register(typed);
+    const stored = await prisma.user.findUnique({ where: { email: typed.toLowerCase() } });
+
+    const group = await prisma.group.create({ data: { name: 'team-' + Date.now() } });
+    const res = await request(app)
+      .post(`/api/groups/${group.id}/members`)
+      .set('Authorization', auth)
+      .send({ identifier: typed });
+    expect(res.status).toBe(201);
+    expect(res.body.user.id).toBe(stored.id);
+
+    const member = await prisma.groupMember.findUnique({
+      where: { groupId_userId: { groupId: group.id, userId: stored.id } },
+    });
+    expect(member).not.toBeNull();
+
+    // An identifier that matches nothing must still 404 — the fallback widens
+    // which row is found, never whether a miss is reported.
+    const miss = await request(app)
+      .post(`/api/groups/${group.id}/members`)
+      .set('Authorization', auth)
+      .send({ identifier: 'nobody@example.com' });
+    expect(miss.status).toBe(404);
+  });
+
   // WebDAV authenticates the same credential, so it owed the same rule —
   // otherwise a self-registered user cannot mount their own drive.
   it('authenticates WebDAV with the address as the user spells it', async () => {

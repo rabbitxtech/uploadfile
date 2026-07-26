@@ -8,6 +8,7 @@ import { asyncHandler } from '../utils/async.js';
 import { badRequest, notFound } from '../utils/errors.js';
 import { notify } from '../services/notify.service.js';
 import { audit, clientIp } from '../services/audit.service.js';
+import { findUserByCredential } from '../utils/credential.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -87,7 +88,12 @@ router.post(
     const { identifier } = z.object({ identifier: z.string().trim().min(1) }).parse(req.body);
     const group = await prisma.group.findUnique({ where: { id: req.params.id } });
     if (!group) throw notFound('Group');
-    const user = await prisma.user.findUnique({ where: { email: identifier } });
+    // Same credential rule as login, grant-by-email and WebDAV Basic auth:
+    // self-registration lowercases the address before storing it, so matching
+    // the raw input 404s an admin who types a member's address the way its
+    // owner writes it ("Bob@Example.com"). The helper tries the exact value
+    // first, so admin-created username accounts still resolve to themselves.
+    const user = await findUserByCredential(identifier);
     if (!user) throw notFound('User');
     await prisma.groupMember.upsert({
       where: { groupId_userId: { groupId: group.id, userId: user.id } },
