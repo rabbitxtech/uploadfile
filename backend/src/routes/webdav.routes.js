@@ -58,6 +58,37 @@ router.use(async (req, res, next) => {
   }
 });
 
+/**
+ * WebDAV is the second way into every upload path, and it owes the same
+ * admin-approval gate the REST side enforces.
+ *
+ * `requireApproved` sits on every REST entry point that creates content —
+ * POST /api/files, /from-url, /from-youtube, /:id/versions, /collab-save and
+ * POST /api/upload/init — because a self-registered user is `approved: false`
+ * until an admin flips it, and the whole point of that gate is that verifying an
+ * email is NOT enough to start storing bytes. This router had no equivalent, so
+ * the gate was one `davfs2`/Finder/rclone mount away from being irrelevant:
+ * the same account that gets 403 from the upload UI could PUT unlimited files
+ * (up to its quota) and MKCOL folders straight into its tree, and they show up
+ * in the normal listing as ordinary uploads.
+ *
+ * Applied to the write verbs only. PROPFIND/GET/HEAD stay open to a pending
+ * user for the same reason the UI lets them log in and browse: the gate is about
+ * creating content, not about reading what they already have. DELETE and MOVE
+ * are likewise not creation — a pending user must still be able to tidy up.
+ *
+ * 403 mirrors what requireApproved returns on the REST side; WebDAV clients
+ * surface it as a permission error, which is the honest description.
+ */
+const DAV_CREATE_METHODS = new Set(['PUT', 'MKCOL', 'COPY']);
+router.use((req, res, next) => {
+  if (!DAV_CREATE_METHODS.has(req.method)) return next();
+  if (req.davUser.role === 'admin' || req.davUser.approved) return next();
+  return res
+    .status(403)
+    .end('Your account is pending administrator approval before you can upload files.');
+});
+
 // ---- path helpers ----
 function davPath(req) {
   // req.path is the part after the /webdav mount. Decode + strip trailing slash.

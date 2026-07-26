@@ -297,6 +297,32 @@ router.post(
       throw badRequest('Uploaded bytes do not match declared size');
     }
 
+    // The destination folder was checked at init(), but a chunked upload is
+    // long-running — a multi-GB file is minutes or hours of parts — and the
+    // folder can be trashed in the meantime, from this same account in another
+    // tab or by an admin. Writing the row anyway lands a LIVE file inside a
+    // trashed parent, which is the state both listings are blind to:
+    // GET /api/folders filters `trashedAt: null` and so hides the ancestor
+    // (there is no path to browse through it), while GET /api/trash wants
+    // `trashedAt: { not: null }` and so does not list the file either. The row
+    // stays live and billed against the quota with no way to reach it and no
+    // error anywhere — the same unreachable-row state the restore-ancestor walk
+    // exists to repair and the trashed-parent gates on POST /folders,
+    // PATCH /folders/:id and the drop-box exist to prevent.
+    //
+    // Fall back to the root rather than failing the upload: the bytes are
+    // already in MinIO and paid for, and refusing here would strand them for a
+    // client that has no way to retry into a folder that no longer exists.
+    // Landing at the root is visible and fixable; landing nowhere is not.
+    let targetFolderId = s.folderId;
+    if (targetFolderId) {
+      const stillThere = await prisma.folder.findFirst({
+        where: { id: targetFolderId, ownerId: req.user.id, trashedAt: null },
+        select: { id: true },
+      });
+      if (!stillThere) targetFolderId = null;
+    }
+
     // Final quota check using the actual bytes, net of what a replace refunds.
     const refundBytes = await refundForSession(s);
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -356,7 +382,7 @@ router.post(
         size: BigInt(total),
         objectKey: s.objectKey,
         bucket: process.env.MINIO_BUCKET || 'uploads',
-        folderId: s.folderId,
+        folderId: targetFolderId,
         ownerId: req.user.id,
         versions: {
           create: {
@@ -416,7 +442,7 @@ router.post(
 
     // Fast-start remux → HLS renditions + transcription (best-effort, async).
     postProcessMedia(file.id, s.mimeType);
-    emitFileChange(req.user.id, s.folderId); // Task5 #5
+    emitFileChange(req.user.id, targetFolderId); // Task5 #5
 
     res.status(201).json(file);
   }),

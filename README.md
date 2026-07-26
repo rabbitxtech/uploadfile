@@ -94,6 +94,9 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **A file in the trash can't be renamed or moved** — the rename/move route wrote to trashed files, so a move relocated something the listing hides (it resurfaced on restore in a folder nobody chose) and a rename changed the entry out from under whoever was looking for it in the trash; starring and re-deleting still work on a trashed file, as they must
 - **A folder can't be moved into a folder that's in the trash** — creating a folder under a trashed parent was already refused, but *moving* one there wasn't, and moving is what the folder tree's drag-and-drop does; the moved folder and everything beneath it would land live inside a hidden parent — absent from My Files, absent from the trash listing, still counted against the quota, with nothing reporting an error
 - **A public folder link dies with its folder** — this already held for single-file links, but a folder link kept resolving after the folder was trashed: it still disclosed the folder's name and path, and an upload-request link still *accepted* anonymous uploads, filing them live inside a deleted folder where the owner could reach them from neither screen
+- **The approval gate covers the WebDAV mount too** — every upload route in the web app refuses an account an admin hasn't approved yet, but the WebDAV drive had no such check, so the same account could mount it in Finder/Explorer and write as much as its quota allowed; creating content over WebDAV is now held to the same rule, while browsing, deleting and moving stay open as they are in the UI
+- **A long upload can't land in a folder that was deleted while it ran** — a chunked upload can take hours, and the destination folder was only checked when it started; trashing that folder mid-upload used to file the finished file live inside a hidden parent, absent from both My Files and the trash while still counted against the quota. The file now lands at the top level, where it's visible and can be moved
+- **Seeing who else is viewing a file requires being able to open it** — the live "who's here" indicator broadcasts each viewer's name and email to everyone in the room, but joining a room was gated on nothing more than being logged in, so anyone holding a file id could collect the identities of people viewing a file they had no access to; joining now goes through the same permission check as opening the file
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -402,17 +405,20 @@ case-tolerant credential lookup, the owner-scoping of bulk move, the reindex
 admin gate, the WebDAV MOVE collision rules, the refusal to write new content to
 a trashed file, the ancestor restore that keeps a rescued item reachable, the
 refusal to rename or move a trashed one, the public folder share that dies with
-its folder, and the refusal to move a folder under a trashed parent. It is
-excluded from `npm test` by `vitest.config.js`, which is why the unit suite needs
-no database.
+its folder, the refusal to move a folder under a trashed parent, the
+admin-approval gate on the WebDAV write verbs, the destination folder re-checked
+when a chunked upload completes, and the read-access check a presence room owes
+before it broadcasts viewers' names and addresses. It is excluded from
+`npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Sixteen files: `files-access.test.js`, `upload-replace.test.js`,
+Eighteen files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
 `collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
 `auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
 `trashed-writes.test.js`, `trash-restore.test.js`,
 `file-patch-trashed.test.js`, `share-folder-trashed.test.js`,
-`folder-move-trashed-parent.test.js`.
+`folder-move-trashed-parent.test.js`, `upload-gates.test.js`,
+`presence-access.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
