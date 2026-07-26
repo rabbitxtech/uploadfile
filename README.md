@@ -87,6 +87,11 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 - **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
 - **Deleting an account takes its storage with it** — the file records are the only index of what's in object storage, and they disappear with the account, so the objects (originals, thumbnails, video renditions) are removed first; otherwise they'd linger with nothing left to attribute them to
+- **A trashed file accepts no new content** — uploading a version to (or re-optimising) a file that's in the trash charged the owner for bytes hanging off a row they can't see and never chose to keep, and the retention sweep could delete it moments later; both routes now refuse, matching every other write path
+- **Two folders can't end up sharing one path** — a folder's path is how the app identifies its whole subtree, so a rename that landed one folder on a live sibling's path made deletes and renames reach into the *other* subtree; the WebDAV mount is held to the same rule the web UI already enforced
+- **Moving a file onto an existing name replaces it, rather than hiding it** — a WebDAV move used to leave two live files under one name, after which which one a client read, overwrote or deleted came down to row order, and the other stayed billed but unreachable; the displaced file now goes to the trash (where its bytes are still refundable) or the move is refused outright
+- **Restoring from the trash puts the item somewhere you can reach it** — restoring a file out of a folder that is itself still in the trash used to clear only the file's own flag, leaving it live inside a hidden folder: gone from the trash listing, unreachable in My Files, and still counted against the quota; the restore now brings back the folders above it too, while deliberately leaving that folder's *other* contents in the trash
+- **A file in the trash can't be renamed or moved** — the rename/move route wrote to trashed files, so a move relocated something the listing hides (it resurfaced on restore in a folder nobody chose) and a rename changed the entry out from under whoever was looking for it in the trash; starring and re-deleting still work on a trashed file, as they must
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -389,12 +394,20 @@ chunked-upload completeness (missing parts, short totals, concurrent parts, the
 folder-cascade safety shared by the retention sweep and "empty trash", the
 WebDAV overwrite's version collapse and net-cost quota check, owner-scoped
 collection membership, the search-only columns being kept out of every list
-response, and the object cleanup a user deletion owes before its cascade
-destroys the only record of what was stored. It is excluded from `npm test` by
+response, the object cleanup a user deletion owes before its cascade destroys
+the only record of what was stored, folder sibling-name uniqueness, the
+case-tolerant credential lookup, the owner-scoping of bulk move, the reindex
+admin gate, the WebDAV MOVE collision rules, the refusal to write new content to
+a trashed file, the ancestor restore that keeps a rescued item reachable, and the
+refusal to rename or move a trashed one. It is excluded from `npm test` by
 `vitest.config.js`, which is why the unit suite needs no database.
 
-Six files: `files-access.test.js`, `upload-replace.test.js`, `retention.test.js`,
-`webdav-overwrite.test.js`, `collections.test.js`, `user-delete.test.js`.
+Fourteen files: `files-access.test.js`, `upload-replace.test.js`,
+`retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
+`collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
+`auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
+`trashed-writes.test.js`, `trash-restore.test.js`,
+`file-patch-trashed.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
