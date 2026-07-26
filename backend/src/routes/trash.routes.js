@@ -8,6 +8,7 @@ import { env } from '../config/env.js';
 import { removeObject } from '../services/storage.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { subUsage } from '../services/quota.service.js';
+import { deletableFolderIds } from '../utils/foldercascade.js';
 import { emitFileChange } from '../realtime/bus.js';
 
 const router = Router();
@@ -95,7 +96,7 @@ router.delete(
     if (file.thumbnailKey) await removeObject(file.thumbnailKey);
     if (file.hlsReady) await removeHls(file.id);
     await prisma.file.delete({ where: { id: file.id } });
-    await subUsage(file.ownerId, Number(totalBytes));
+    await subUsage(file.ownerId, totalBytes);
     res.json({ ok: true });
   }),
 );
@@ -117,11 +118,31 @@ router.post(
       if (f.thumbnailKey) await removeObject(f.thumbnailKey);
       if (f.hlsReady) await removeHls(f.id);
     }
+    // Folder.parent is onDelete: Cascade, so deleting every trashed folder also
+    // takes any LIVE descendant with it — and restore un-trashes only the exact
+    // ids it is given, so a user who restored a child out of a trashed parent
+    // still has that parent sitting in the trash. Emptying would then destroy
+    // the folder they just chose to keep and orphan its files to the root
+    // (File.folder is SetNull), with their bytes never refunded, because those
+    // files were untrashed and so were never in the delete set above. Skip any
+    // trashed folder that still has a live descendant.
+    const [trashedFolders, survivors] = await Promise.all([
+      prisma.folder.findMany({
+        where: { ownerId, trashedAt: { not: null } },
+        select: { id: true, ownerId: true, path: true },
+      }),
+      prisma.folder.findMany({
+        where: { ownerId, trashedAt: null },
+        select: { ownerId: true, path: true },
+      }),
+    ]);
+    const deletableFolders = deletableFolderIds(trashedFolders, survivors);
+
     await prisma.$transaction([
       prisma.file.deleteMany({ where: { ownerId, trashedAt: { not: null } } }),
-      prisma.folder.deleteMany({ where: { ownerId, trashedAt: { not: null } } }),
+      prisma.folder.deleteMany({ where: { id: { in: deletableFolders } } }),
     ]);
-    await subUsage(ownerId, Number(total));
+    await subUsage(ownerId, total);
     res.json({ ok: true, freedBytes: total.toString() });
   }),
 );

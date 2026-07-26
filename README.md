@@ -23,12 +23,12 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Chunked / resumable upload** for large files (MinIO multipart, 8 MiB parts)
 - **Upload from URL** — server-side fetch into storage (SSRF-guarded)
 - **Import video from URL** — paste a link from a curated allowlist of reputable sources (YouTube, Vimeo, Dailymotion, TED, Internet Archive, Wikimedia, SoundCloud, X, Facebook, Instagram, Reddit, Twitch); the server downloads the best-quality video with `yt-dlp` (+ffmpeg) into your files, with a **live progress** indicator. Extend the allowlist via `VIDEO_IMPORT_HOSTS`.
-- **Replace-on-duplicate** flow: name conflict surfaces a dialog with "apply to all remaining" checkbox; old file + MinIO object atomically replaced, quota refunded
+- **Replace-on-duplicate** flow: name conflict surfaces a dialog with "apply to all remaining" checkbox; old file + MinIO object atomically replaced, quota refunded — and charged **net** of the refund, so replacing a file with one of the same size works even when you're at your limit
 - File versioning, tags (chip + popover editor), full-text search, tag filter
 - Preview (images w/ lightbox + EXIF, video, audio, text/markdown w/ syntax highlight) and auto-generated thumbnails (`sharp`)
-- **Comments** on files (visible to anyone with read access)
+- **Comments** on files (visible to anyone with read access), with **`@mentions`** — mention someone by username or by the local part of their email (`@alice` finds `alice@example.com`) and they get a notification
 - **Collections** — group files across folders (a file can be in many)
-- Trash bin (soft delete + restore + empty + hard delete) with **auto-clean** — items left in trash past a retention window are purged automatically (quota refunded)
+- Trash bin (soft delete + restore + empty + hard delete) with **auto-clean** — items left in trash past a retention window are purged automatically (quota refunded). Both the sweep and "empty trash" **never destroy a folder you restored out of a still-trashed parent**, and a file's quota refund always covers *every* version it accumulated
 - Bulk operations: trash, move, **bulk rename**, **download as ZIP**
 - List view + image **grid view** (with auto-suggestion when ≥ 50% of files are images)
 - **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and the next page auto-loads on scroll (IntersectionObserver sentinel, with a "Load more" fallback), so a folder with thousands of files stays responsive
@@ -44,6 +44,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Per-link **label** (tell your links apart), **QR code** (show it to someone standing next to you), and **extend/remove expiry** after creation
 - **Share to a specific user or to a group** (grants) — recipients see it under "Shared with me" (group shares marked `via "<group>"`)
 - Public folder share renders a list + "Download folder as ZIP"
+- **Trashing a file kills its share links** — a public link to a trashed file stops resolving and stops serving bytes, so moving something to the trash is a real "un-share it"
 - Owner notified when shared content is downloaded; per-share access log
 
 ### Real-time & access
@@ -69,7 +70,16 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - SSRF guard on upload-from-URL (DNS-resolution check, **re-validated on every redirect hop**)
 - **Content-Security-Policy** enabled (helmet); password-protected shares don't reveal their contents until unlocked
 - **Revocable sessions enforced on WebSockets too** — every socket (`/ws`, `/yjs`, `/gws`) validates the session row and rejects purpose-scoped tokens, so "log out everywhere" also cuts realtime
+- **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
+- **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
+- **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
 - Refuses to start in prod without a strong `JWT_SECRET`, `POSTGRES_PASSWORD` or MinIO credentials; datastore ports are closed in prod; redacted structured logs
+
+### Data integrity
+- **An interrupted upload is refused, never half-stored** — completing a chunked upload requires every part to be present and the bytes to actually reach the declared size, so a missing chunk fails loudly instead of assembling a file that looks fine but won't open
+- **Parts can't be lost to a retry** — the part list is written with a compare-and-set, so overlapping or retried chunk uploads can't drop each other's entries
+- **Trash auto-clean won't take a file you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
+- **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -103,6 +113,7 @@ The dev stack also runs **Mailpit** — outgoing mail (e.g. password resets) is 
 
 ```bash
 cp docs/prod-env.example.txt .env  # annotated template — fill in the REQUIRED values
+                                   # (.env.prod.example is the same contract, terser)
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```
 
@@ -256,7 +267,11 @@ backend/                Express + Prisma + MinIO SDK
                         checksum, audit, games/ (per-game rule engines),
                         access (grants — single source of truth, incl. groups)
     utils/              http error helpers, asyncHandler, listquery (pagination),
-                        vector (pgvector helpers)
+                        vector (pgvector helpers), range (HTTP Range parsing),
+                        mentions (@mention parsing + lookup),
+                        foldercascade (which folders a bulk delete may safely
+                        remove — Folder.parent cascades, so this is shared by
+                        the retention sweep and "empty trash")
   Dockerfile            Debian base; installs tesseract/poppler/ffmpeg/yt-dlp,
                         compiles whisper-cli; migrate + serve
 
@@ -339,6 +354,37 @@ All three sockets authenticate through `realtime/wsauth.js` — a live session r
 plus a real session token (purpose-scoped 2FA/stream tokens are rejected).
 
 Interactive API docs (Swagger UI) are served at `/api/docs`.
+
+## Tests
+
+```bash
+cd backend  && npm test      # unit + Supertest — no database needed
+cd frontend && npm test      # Vitest + React Testing Library
+cd frontend && npm run lint  # eslint, --max-warnings 0
+```
+
+CI (`.github/workflows/ci.yml`) runs both suites plus a frontend lint + build.
+
+**Integration suite — needs a real PostgreSQL.** `backend/test/integration/**`
+exercises the routes against a live database, covering the things that only
+break against real SQL and real cascades: quota bookkeeping (net-cost replace,
+the per-part byte ceiling, the floor-at-zero refund, refunding *every* version),
+chunked-upload completeness (missing parts, short totals, concurrent parts, the
+10000-part cap), comment @mentions, owner-scoped folder grants, trashed-file
+share links, and the folder-cascade safety shared by the retention sweep and
+"empty trash". It is excluded from `npm test` by `vitest.config.js`, which is why
+the unit suite needs no database.
+
+```bash
+docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
+  -e POSTGRES_DB=test --name uploader-test-db pgvector/pgvector:pg16
+cd backend
+TEST_DATABASE_URL=postgresql://test:test@localhost:55432/test npm run test:integration
+```
+
+Point `TEST_DATABASE_URL` at a **throwaway database only** — the helper
+TRUNCATEs every table between tests (and refuses URLs containing
+`prod`/`production`/`live`).
 
 ## See also
 

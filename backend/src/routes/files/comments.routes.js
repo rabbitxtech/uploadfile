@@ -6,6 +6,7 @@ import { prisma } from '../../config/prisma.js';
 import { asyncHandler } from '../../utils/async.js';
 import { notFound } from '../../utils/errors.js';
 import { notify } from '../../services/notify.service.js';
+import { parseMentions, mentionWhere } from '../../utils/mentions.js';
 import { readableFile } from './_shared.js';
 
 export const commentsRouter = Router();
@@ -43,12 +44,13 @@ commentsRouter.post(
         link: '/files',
       });
     }
-    // I3 — notify @mentioned users (by username/email), excluding self + owner
-    // (owner already notified above) and de-duplicated.
-    const mentions = [...new Set((body.match(/@([a-zA-Z0-9._-]+)/g) || []).map((m) => m.slice(1)))];
+    // I3 — notify @mentioned users, excluding self + owner (already notified
+    // above) and de-duplicated. Tokenising and the matching rules live in
+    // utils/mentions.js so their edge cases are unit-tested.
+    const mentions = parseMentions(body);
     if (mentions.length) {
       const users = await prisma.user.findMany({
-        where: { email: { in: mentions } },
+        where: mentionWhere(mentions),
         select: { id: true },
       });
       const already = new Set([req.user.id, file.ownerId]);

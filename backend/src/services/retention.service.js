@@ -8,6 +8,7 @@ import { env } from '../config/env.js';
 import { removeObject } from './storage.service.js';
 import { removeHls } from './hls.service.js';
 import { subUsage } from './quota.service.js';
+import { deletableFolderIds } from '../utils/foldercascade.js';
 
 const SIX_HOURS = 6 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -38,14 +39,43 @@ export async function purgeExpiredTrash() {
     freed += bytes;
   }
   for (const [ownerId, bytes] of freedByOwner) {
-    await subUsage(ownerId, Number(bytes)).catch(() => {});
+    await subUsage(ownerId, bytes).catch(() => {});
   }
 
   // Folders hold no MinIO objects of their own (files are handled above, and a
   // trashed folder's files are themselves trashed) — just drop the rows.
-  const folders = await prisma.folder.deleteMany({
+  //
+  // Folder.parent is onDelete: Cascade, so deleting an expired folder also
+  // deletes its subtree — including folders that are NOT expired. Trashing a
+  // folder stamps the whole subtree with one timestamp, so they normally expire
+  // together; restore breaks that, because it un-trashes only the exact ids it
+  // was given. Restore a child out of a long-trashed parent and the sweep wipes
+  // the folder the user just chose to keep, orphaning its files to the root
+  // (File.folder is SetNull). Skip any folder with a live descendant and let it
+  // expire on a later pass, once the descendant is trashed or moved away.
+  const expired = await prisma.folder.findMany({
     where: { trashedAt: { not: null, lt: cutoff } },
+    select: { id: true, ownerId: true, path: true },
   });
+
+  // Which folders survive this cutoff, fetched in one query rather than a
+  // count() per expired folder — a mass delete expires thousands at once, and
+  // this runs unattended on a timer where an N+1 just quietly burns the pool.
+  const survivors = expired.length
+    ? await prisma.folder.findMany({
+        where: {
+          ownerId: { in: [...new Set(expired.map((f) => f.ownerId))] },
+          OR: [{ trashedAt: null }, { trashedAt: { gte: cutoff } }],
+        },
+        select: { ownerId: true, path: true },
+      })
+    : [];
+
+  const deletable = deletableFolderIds(expired, survivors);
+
+  const folders = deletable.length
+    ? await prisma.folder.deleteMany({ where: { id: { in: deletable } } })
+    : { count: 0 };
 
   if (files.length || folders.count) {
     logger.info(

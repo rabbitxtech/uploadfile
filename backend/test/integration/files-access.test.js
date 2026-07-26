@@ -305,3 +305,162 @@ describe('folder listing', () => {
     expect(res.body.total).toBe(1);
   });
 });
+
+// I3 — @mentions in comments. The mention token cannot contain '@' (that is
+// what ends it), so matching User.email exactly only ever resolved
+// username-style accounts; self-registered users all have real addresses.
+describe('comment @mentions', () => {
+  it('notifies a user mentioned by the local part of their email', async () => {
+    const owner = await makeUser();
+    const mentioned = await makeUser();
+    const { auth } = await login(owner);
+    const file = await makeFile(owner);
+
+    const local = mentioned.email.split('@')[0];
+    const res = await request(app)
+      .post(`/api/files/${file.id}/comments`)
+      .set('Authorization', auth)
+      .send({ body: `hey @${local} look at this` });
+    expect(res.status).toBe(201);
+
+    // notify() is fire-and-forget; give it a tick to land.
+    await new Promise((r) => setTimeout(r, 200));
+    const n = await prisma.notification.findMany({ where: { userId: mentioned.id } });
+    expect(n.some((x) => x.type === 'mention')).toBe(true);
+  });
+
+  it('does not notify the commenter for mentioning themselves', async () => {
+    const owner = await makeUser();
+    const { auth } = await login(owner);
+    const file = await makeFile(owner);
+
+    const local = owner.email.split('@')[0];
+    await request(app)
+      .post(`/api/files/${file.id}/comments`)
+      .set('Authorization', auth)
+      .send({ body: `note to self @${local}` });
+
+    await new Promise((r) => setTimeout(r, 200));
+    const n = await prisma.notification.findMany({ where: { userId: owner.id } });
+    expect(n.some((x) => x.type === 'mention')).toBe(false);
+  });
+});
+
+// Folder grants match by Folder.path prefix, but paths are NOT namespaced per
+// owner — two users can each own "/docs". A grant on one user's /docs must not
+// leak the identically-named folder (or its files) belonging to someone else.
+describe('folder grants are scoped to the granting owner', () => {
+  it('does not leak a same-path folder owned by a different user', async () => {
+    const granter = await makeUser();
+    const victim = await makeUser();
+    const grantee = await makeUser();
+    const { auth } = await login(grantee);
+
+    // Both owners have a folder at the very same path.
+    const shared = await makeFolder(granter, { name: 'docs' });
+    const theirs = await makeFolder(victim, { name: 'docs' });
+    expect(shared.path).toBe(theirs.path);
+
+    const secret = await makeFile(victim, { folderId: theirs.id });
+    const intended = await makeFile(granter, { folderId: shared.id });
+
+    await prisma.folderGrant.create({
+      data: { folderId: shared.id, userId: grantee.id, permission: 'view' },
+    });
+
+    // The granted file is readable...
+    const ok = await request(app).get(`/api/files/${intended.id}`).set('Authorization', auth);
+    expect(ok.status).toBe(200);
+
+    // ...the identically-pathed one from another owner is NOT.
+    const leak = await request(app).get(`/api/files/${secret.id}`).set('Authorization', auth);
+    expect(leak.status).toBe(404);
+  });
+});
+
+// A public share link on a single file never checked File.trashedAt, so
+// trashing a file left its link live: the metadata endpoint kept describing it
+// and the download endpoint kept serving the bytes. Folder shares already
+// filtered trashed files out of the listing, so this was inconsistent too.
+describe('public share links respect the trash', () => {
+  it('stops serving a file once it is trashed', async () => {
+    const owner = await makeUser();
+    const file = await makeFile(owner);
+    await prisma.share.create({
+      data: { token: 'tok-trash-test', fileId: file.id, ownerId: owner.id },
+    });
+
+    // Live file: the link works.
+    const before = await request(app).get('/api/shares/public/tok-trash-test');
+    expect(before.status).toBe(200);
+    expect(before.body.file?.id).toBe(file.id);
+
+    await prisma.file.update({ where: { id: file.id }, data: { trashedAt: new Date() } });
+
+    const after = await request(app).get('/api/shares/public/tok-trash-test');
+    expect(after.status).toBe(404);
+
+    const dl = await request(app).post('/api/shares/public/tok-trash-test/download').send({});
+    expect(dl.status).toBe(404);
+  });
+});
+
+// Same cascade hazard the retention sweep guards against, in the manual path.
+// Folder.parent is onDelete: Cascade, and restore un-trashes only the ids it is
+// handed — so a trashed parent whose child was restored is still sitting in the
+// trash, and deleting every trashed folder takes the restored child with it.
+// The files under it are worse off than deleted: File.folder is SetNull, so they
+// silently relocate to the root, and their bytes are never refunded because they
+// were untrashed and so were never in the delete set.
+describe('emptying the trash respects restored descendants', () => {
+  it('keeps a restored child of a still-trashed parent, and its files', async () => {
+    const user = await makeUser();
+    const { auth } = await login(user);
+
+    const parent = await prisma.folder.create({
+      data: { name: 'old', path: '/old', ownerId: user.id, trashedAt: new Date() },
+    });
+    // The child was restored out of the trashed parent, so it is live again.
+    const restored = await prisma.folder.create({
+      data: { name: 'keep', path: '/old/keep', parentId: parent.id, ownerId: user.id },
+    });
+    const keptFile = await makeFile(user, { folderId: restored.id, size: 500 });
+
+    const res = await request(app).post('/api/trash/empty').set('Authorization', auth);
+    expect(res.status).toBe(200);
+
+    // The restored folder survives, still parented where it was...
+    const child = await prisma.folder.findUnique({ where: { id: restored.id } });
+    expect(child).not.toBeNull();
+    expect(child.parentId).toBe(parent.id);
+    // ...and its file is neither deleted nor orphaned to the root.
+    const file = await prisma.file.findUnique({ where: { id: keptFile.id } });
+    expect(file).not.toBeNull();
+    expect(file.folderId).toBe(restored.id);
+  });
+
+  it('still deletes a fully trashed subtree', async () => {
+    const user = await makeUser();
+    const { auth } = await login(user);
+    const now = new Date();
+
+    const parent = await prisma.folder.create({
+      data: { name: 'gone', path: '/gone', ownerId: user.id, trashedAt: now },
+    });
+    const child = await prisma.folder.create({
+      data: {
+        name: 'sub',
+        path: '/gone/sub',
+        parentId: parent.id,
+        ownerId: user.id,
+        trashedAt: now,
+      },
+    });
+
+    const res = await request(app).post('/api/trash/empty').set('Authorization', auth);
+    expect(res.status).toBe(200);
+
+    expect(await prisma.folder.findUnique({ where: { id: parent.id } })).toBeNull();
+    expect(await prisma.folder.findUnique({ where: { id: child.id } })).toBeNull();
+  });
+});

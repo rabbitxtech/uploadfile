@@ -95,6 +95,7 @@ router.get(
       },
     });
     if (!share) throw notFound('Share');
+    assertShareTargetLive(share);
     if (share.expiresAt && share.expiresAt < new Date()) throw forbidden('Share expired');
     if (share.maxDownloads && share.downloads >= share.maxDownloads) {
       throw forbidden('Share download limit reached');
@@ -139,8 +140,30 @@ router.post(
   }),
 );
 
+/**
+ * A share on a single file must stop working once that file is trashed —
+ * trashing is the user's "un-share it" action, and the folder-share listing has
+ * always filtered trashed files out. Treated as 404 (not 403) to match how the
+ * rest of the public surface refuses to confirm what a token points at.
+ *
+ * `share.file` must be loaded by the caller. Distinguishing "not included" from
+ * "row is gone" matters: reading a missing relation as a dead file would 404
+ * every *live* file share made through a caller that didn't `include` it, so
+ * that mistake fails closed on the wrong side. Throw instead — it turns a
+ * future caller's missing `include` into a loud 500 during development rather
+ * than a share link that mysteriously stops resolving in production.
+ */
+function assertShareTargetLive(share) {
+  if (!share.fileId) return; // folder share — the listing filters trashed files
+  if (share.file === undefined) {
+    throw new Error('assertShareTargetLive: share.file was not included by the caller');
+  }
+  if (!share.file || share.file.trashedAt) throw notFound('Share');
+}
+
 async function authorizeShare(share, providedPassword) {
   if (!share) throw notFound('Share');
+  assertShareTargetLive(share);
   if (share.expiresAt && share.expiresAt < new Date()) throw forbidden('Share expired');
   if (share.maxDownloads != null && share.downloads >= share.maxDownloads) {
     throw forbidden('Share download limit reached');

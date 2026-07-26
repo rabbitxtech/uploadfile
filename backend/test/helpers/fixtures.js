@@ -65,6 +65,17 @@ export async function makeFolder(owner, { name = uniq('folder'), parentId = null
   });
 }
 
+/**
+ * A file as the app actually stores one — including its `version: 1` row.
+ *
+ * Every production path that creates a File creates that first FileVersion
+ * alongside it (single-shot upload, chunked complete, from-url, WebDAV PUT), and
+ * every hard-delete path refunds the SUM of versions[].size rather than
+ * File.size, because each version upload charges the owner separately and leaves
+ * the previous object in MinIO. A fixture file with no version rows is a shape
+ * that cannot exist in production, and it makes those refunds silently read as
+ * zero — so the tests would pass against code that never refunds anything.
+ */
 export async function makeFile(owner, {
   name = uniq('file') + '.txt',
   folderId = null,
@@ -73,18 +84,20 @@ export async function makeFile(owner, {
   trashedAt = null,
   starred = false,
 } = {}) {
+  const objectKey = `u/${owner.id}/${uniq('obj')}`;
   return prisma.file.create({
     data: {
       name,
       originalName: name,
       mimeType,
       size: BigInt(size),
-      objectKey: `u/${owner.id}/${uniq('obj')}`,
+      objectKey,
       bucket: process.env.MINIO_BUCKET || 'uploads',
       ownerId: owner.id,
       folderId,
       trashedAt,
       starred,
+      versions: { create: { version: 1, objectKey, size: BigInt(size) } },
     },
   });
 }

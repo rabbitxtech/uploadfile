@@ -188,12 +188,25 @@ router.put('*', async (req, res) => {
 
   if (existing) {
     const oldKey = existing.objectKey;
-    await prisma.file.update({
-      where: { id: existing.id },
-      data: { objectKey: key, size: BigInt(size), checksum, mimeType: req.headers['content-type'] || existing.mimeType },
-    });
+    // Overwrite in place, and move the CURRENT FileVersion onto the new object
+    // in the same transaction. A WebDAV PUT is an overwrite, not a new revision
+    // — the old object is deleted below, so leaving the version row pointing at
+    // it would strand a row whose objectKey 404s and whose size no longer
+    // matches the bytes. Every hard-delete path (trash, the retention sweep,
+    // replace-on-duplicate) refunds the sum of versions[].size, so a stale
+    // version size silently corrupts the owner's usage counter on delete.
+    await prisma.$transaction([
+      prisma.file.update({
+        where: { id: existing.id },
+        data: { objectKey: key, size: BigInt(size), checksum, mimeType: req.headers['content-type'] || existing.mimeType },
+      }),
+      prisma.fileVersion.updateMany({
+        where: { fileId: existing.id, version: existing.currentVersion },
+        data: { objectKey: key, size: BigInt(size), checksum },
+      }),
+    ]);
     await addUsage(owner, size);
-    await subUsage(owner, Number(existing.size));
+    await subUsage(owner, existing.size);
     removeObject(oldKey).catch(() => {});
     return res.status(204).end();
   }

@@ -21,7 +21,8 @@ browser ──HTTPS──▶ Caddy (rabbitworld.ddns.net)
 
 ## First deploy
 ```bash
-cp .env.prod.example .env          # then edit .env
+cp .env.prod.example .env          # then edit .env (prod-env.example.txt = same
+                                   # vars, fuller commentary)
 #   JWT_SECRET=$(openssl rand -base64 48)   # REQUIRED — prod refuses to start without it
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
 ```

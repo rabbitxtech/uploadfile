@@ -18,6 +18,7 @@ import { notFound, unauthorized, forbidden } from '../../utils/errors.js';
 import { getObjectStream, getObjectRange } from '../../services/storage.service.js';
 import { fileAccessLevel } from '../../services/access.service.js';
 import { hlsPrefix } from '../../services/hls.service.js';
+import { parseRange } from '../../utils/range.js';
 import { readCookie, bumpAccessed, STREAM_COOKIE } from './_shared.js';
 
 export const streamRouter = Router();
@@ -60,22 +61,17 @@ streamRouter.get(
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
 
-    const range = req.headers.range;
+    const range = parseRange(req.headers.range, size);
+    if (range?.unsatisfiable) {
+      res.status(416).setHeader('Content-Range', `bytes */${size}`);
+      return res.end();
+    }
     if (range) {
-      const m = /bytes=(\d*)-(\d*)/.exec(range);
-      let start = m && m[1] ? parseInt(m[1], 10) : 0;
-      let end = m && m[2] ? parseInt(m[2], 10) : size - 1;
-      if (Number.isNaN(start) || start < 0) start = 0;
-      if (Number.isNaN(end) || end >= size) end = size - 1;
-      if (start > end) {
-        res.status(416).setHeader('Content-Range', `bytes */${size}`);
-        return res.end();
-      }
-      const chunkLen = end - start + 1;
+      const { start, end, length } = range;
       res.status(206);
       res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
-      res.setHeader('Content-Length', chunkLen);
-      const stream = await getObjectRange(file.objectKey, start, chunkLen);
+      res.setHeader('Content-Length', length);
+      const stream = await getObjectRange(file.objectKey, start, length);
       stream.on('error', () => res.destroy());
       stream.pipe(res);
     } else {

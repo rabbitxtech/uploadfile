@@ -17,6 +17,30 @@ function granteeWhere(userId, groupIds) {
   return { OR: or };
 }
 
+/**
+ * Does `folder` sit at, or under, the folder a grant was made on?
+ *
+ * Folder.path is a denormalised string like "/docs/2025" built from folder
+ * NAMES only — it is not namespaced per owner, so two users can each own a
+ * folder at "/docs". Matching on the path alone therefore lets a grant on one
+ * owner's tree resolve against an identically-named folder belonging to someone
+ * else. The grant's own folder carries the authoritative owner, so require the
+ * target to belong to that same owner as well as sit under the path.
+ */
+function grantCoversFolder(grantFolder, folder) {
+  if (!grantFolder?.path || !folder?.path) return false;
+  // Both owners must actually be loaded. An absent ownerId is a caller bug (a
+  // `select` that dropped the column), and comparing against undefined would
+  // silently make every grant stop matching — a folder share that just quietly
+  // stops working, with no error to trace it by. Fail loudly instead.
+  if (!grantFolder.ownerId || !folder.ownerId) {
+    throw new Error('grantCoversFolder: ownerId missing — the caller must select it');
+  }
+  if (grantFolder.ownerId !== folder.ownerId) return false;
+  const prefix = grantFolder.path.endsWith('/') ? grantFolder.path : grantFolder.path + '/';
+  return folder.path === grantFolder.path || folder.path.startsWith(prefix);
+}
+
 // Resolve a user's access level to a file.
 // Returns one of: 'owner' | 'admin' | 'edit' | 'view' | null
 //
@@ -43,21 +67,17 @@ export async function fileAccessLevel(user, file) {
   if (file.folderId) {
     const folder = await prisma.folder.findUnique({
       where: { id: file.folderId },
-      select: { path: true },
+      select: { path: true, ownerId: true },
     });
     if (folder) {
       const grants = await prisma.folderGrant.findMany({
         where: granteeWhere(user.id, groupIds),
-        include: { folder: { select: { path: true } } },
+        include: { folder: { select: { path: true, ownerId: true } } },
       });
       for (const g of grants) {
-        const gp = g.folder?.path;
-        if (!gp) continue;
-        const prefix = gp.endsWith('/') ? gp : gp + '/';
-        if (folder.path === gp || folder.path.startsWith(prefix)) {
-          if (g.permission === 'edit') level = 'edit';
-          else if (!level) level = 'view';
-        }
+        if (!grantCoversFolder(g.folder, folder)) continue;
+        if (g.permission === 'edit') level = 'edit';
+        else if (!level) level = 'view';
       }
     }
   }
@@ -79,17 +99,13 @@ export async function folderAccessLevel(user, folder) {
   const groupIds = await userGroupIds(user.id);
   const grants = await prisma.folderGrant.findMany({
     where: granteeWhere(user.id, groupIds),
-    include: { folder: { select: { path: true } } },
+    include: { folder: { select: { path: true, ownerId: true } } },
   });
   let level = null;
   for (const g of grants) {
-    const gp = g.folder?.path;
-    if (!gp) continue;
-    const prefix = gp.endsWith('/') ? gp : gp + '/';
-    if (folder.path === gp || folder.path.startsWith(prefix)) {
-      if (g.permission === 'edit') level = 'edit';
-      else if (!level) level = 'view';
-    }
+    if (!grantCoversFolder(g.folder, folder)) continue;
+    if (g.permission === 'edit') level = 'edit';
+    else if (!level) level = 'view';
   }
   return level;
 }
