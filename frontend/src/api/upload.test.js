@@ -89,13 +89,20 @@ describe('chunkedUpload', () => {
     expect(calls.map((c) => c.size)).toEqual([100, 100]);
   });
 
-  it('still uploads one part for a 0-byte file', async () => {
+  it('sends NO parts for a 0-byte file', async () => {
     const calls = installFetch();
-    await chunkedUpload(makeFile(0));
+    const res = await chunkedUpload(makeFile(0));
 
-    // total is clamped to >= 1 so an empty file completes rather than skipping
-    // straight to complete with no parts at all.
-    expect(calls.map((c) => c.size)).toEqual([0]);
+    // An empty file has no parts. Multipart cannot store a zero-byte part, so
+    // the backend rejects an empty body ("Empty chunk") — sending one made a
+    // 0-byte file impossible to upload at all, since Uploader.jsx has no
+    // single-shot fallback. This test previously asserted the opposite and
+    // passed only because the fetch stub answers 200 to any part, including an
+    // empty one; test/integration/upload-replace.test.js drives the real route.
+    expect(calls).toHaveLength(0);
+    // complete() still runs and returns the created file.
+    expect(mockPost).toHaveBeenCalledWith('/upload/sess-1/complete');
+    expect(res).toEqual({ id: 'file-1', name: 'big.bin' });
   });
 
   it('forwards filename, size, mime, folder and replaceFileId to init', async () => {

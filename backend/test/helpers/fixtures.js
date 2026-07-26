@@ -83,6 +83,10 @@ export async function makeFile(owner, {
   mimeType = 'text/plain',
   trashedAt = null,
   starred = false,
+  // Index-only columns. They exist to be searched against server-side and must
+  // never ride along in a list response — see stripIndexFields.
+  ocrText = null,
+  embedding = null,
 } = {}) {
   const objectKey = `u/${owner.id}/${uniq('obj')}`;
   return prisma.file.create({
@@ -97,6 +101,8 @@ export async function makeFile(owner, {
       folderId,
       trashedAt,
       starred,
+      ocrText,
+      embedding,
       versions: { create: { version: 1, objectKey, size: BigInt(size) } },
     },
   });

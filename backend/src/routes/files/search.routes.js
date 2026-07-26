@@ -7,7 +7,7 @@ import { prisma } from '../../config/prisma.js';
 import { asyncHandler } from '../../utils/async.js';
 import { indexFile, embed, cosine } from '../../services/ai.service.js';
 import { pgvectorEnabled, toVectorLiteral } from '../../utils/vector.js';
-import { ciContains } from './_shared.js';
+import { ciContains, stripIndexFields, stripIndexFieldsAll } from './_shared.js';
 
 export const searchRouter = Router();
 
@@ -18,7 +18,7 @@ searchRouter.get(
     const tag = req.query.tag ? String(req.query.tag) : null;
     if (!q && !tag) return res.json({ files: [] });
 
-    const files = await prisma.file.findMany({
+    const rows = await prisma.file.findMany({
       where: {
         ownerId: req.user.id,
         trashedAt: null,
@@ -36,7 +36,9 @@ searchRouter.get(
       orderBy: { updatedAt: 'desc' },
       take: 100,
     });
-    res.json({ files });
+    // Searched against, never rendered — see stripIndexFields. Returning them for
+    // up to 100 rows turned a search-as-you-type into a multi-megabyte response.
+    res.json({ files: stripIndexFieldsAll(rows) });
   }),
 );
 
@@ -74,8 +76,7 @@ searchRouter.get(
         files: hits.flatMap((h) => {
           const f = byId.get(h.id);
           if (!f) return [];
-          const { embedding, ocrText, ...rest } = f;
-          return [{ ...rest, score: Number(Number(h.score).toFixed(3)) }];
+          return [{ ...stripIndexFields(f), score: Number(Number(h.score).toFixed(3)) }];
         }),
       });
     }
@@ -92,8 +93,8 @@ searchRouter.get(
         } catch {
           v = null;
         }
-        const { embedding, ocrText, ...rest } = f;
-        return { file: rest, score: cosine(qvec, v) };
+        // Parse the embedding BEFORE stripping it — this branch ranks in JS.
+        return { file: stripIndexFields(f), score: cosine(qvec, v) };
       })
       .filter((x) => x.score > 0.2)
       .sort((a, b) => b.score - a.score)

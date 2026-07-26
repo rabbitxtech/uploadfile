@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
 import { folderAccessLevel } from '../services/access.service.js';
+import { stripIndexFieldsAll } from './files/_shared.js';
 import {
   parseListQuery,
   fileOrderBy,
@@ -72,7 +73,15 @@ router.get(
           firstPage ? prisma.file.count({ where: fileWhere }) : Promise.resolve(null),
         ]);
         const { files, nextCursor } = pageResult(rows, page.take);
-        return res.json({ current: folder, folders, files, nextCursor, total, shared: true });
+        // Strip AFTER paging — pageResult derives the next cursor from files[].id.
+        return res.json({
+          current: folder,
+          folders,
+          files: stripIndexFieldsAll(files),
+          nextCursor,
+          total,
+          shared: true,
+        });
       }
     }
 
@@ -95,7 +104,7 @@ router.get(
         : Promise.resolve(null),
     ]);
     const { files, nextCursor } = pageResult(rows, page.take);
-    res.json({ current, folders, files, nextCursor, total });
+    res.json({ current, folders, files: stripIndexFieldsAll(files), nextCursor, total });
   }),
 );
 

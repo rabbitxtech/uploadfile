@@ -11,6 +11,7 @@
 // in a suite with one. Anything added here must fail before the first query.
 import { describe, it, expect } from 'vitest';
 import request from 'supertest';
+import jwt from 'jsonwebtoken';
 import { buildApp } from '../src/app.js';
 
 const app = buildApp();
@@ -109,6 +110,33 @@ describe('WebDAV mounts before cors()', () => {
     expect(res.status).toBe(401);
     expect(res.headers['www-authenticate']).toMatch(/Basic/i);
   });
+});
+
+// The 2FA tmpToken and the video stream token are signed with the SAME secret as
+// a session token, so they clear jwt.verify and only a claim check separates
+// them. authenticateWs rejects any token carrying a `p` claim; requireAuth must
+// apply the same rule, or the REST API is weaker than the sockets. Neither token
+// carries a `sid` today, so the session check would also catch them — these
+// cases exist so that stays true by rule rather than by coincidence, and they
+// fail before any database query (rejected on the claim, never looked up).
+describe('purpose-scoped tokens are not session credentials', () => {
+  const secret = process.env.JWT_SECRET;
+
+  const purposeTokens = [
+    ['a 2FA tmpToken (minted before the code is checked)', { sub: 'u1', p: '2fa' }],
+    ['a video stream token', { sub: 'u1', fid: 'f1', p: 'stream' }],
+    // A `p` token that also carries a sid must still be refused: the claim is
+    // what disqualifies it, independently of session binding.
+    ['a purpose token carrying a sid', { sub: 'u1', sid: 's1', p: 'stream' }],
+  ];
+
+  for (const [label, claims] of purposeTokens) {
+    it(`rejects ${label} on an authenticated API route`, async () => {
+      const token = jwt.sign(claims, secret, { expiresIn: '5m' });
+      const res = await request(app).get('/api/auth/me').set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(401);
+    });
+  }
 });
 
 describe('security headers', () => {

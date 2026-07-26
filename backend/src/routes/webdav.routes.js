@@ -13,6 +13,7 @@ import {
 } from '../services/storage.service.js';
 import { assertQuota, addUsage, netCost, subUsage } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
+import { removeHls } from '../services/hls.service.js';
 import { prisma } from '../config/prisma.js';
 
 const router = Router();
@@ -217,7 +218,19 @@ router.put('*', async (req, res) => {
     await prisma.$transaction([
       prisma.file.update({
         where: { id: existing.id },
-        data: { objectKey: key, size: BigInt(size), checksum, mimeType: req.headers['content-type'] || existing.mimeType },
+        data: {
+          objectKey: key,
+          size: BigInt(size),
+          checksum,
+          mimeType: req.headers['content-type'] || existing.mimeType,
+          // New content invalidates the old renditions, exactly as the version
+          // upload and replace-on-duplicate paths do. HLS segments are keyed by
+          // fileId ALONE, so leaving hlsReady set here doesn't just strand the
+          // old segments — /stream/hls/:name gates on nothing but this flag, so
+          // the player would keep serving the PREVIOUS file's video under the
+          // new one, with no error anywhere.
+          hlsReady: false,
+        },
       }),
       prisma.fileVersion.updateMany({
         where: { fileId: existing.id, version: existing.currentVersion },
@@ -232,6 +245,7 @@ router.put('*', async (req, res) => {
     // The new object shares no key with the old ones (objectKeyFor is unique per
     // call), so removing them can't touch what was just written.
     for (const k of new Set(staleKeys)) removeObject(k).catch(() => {});
+    if (existing.hlsReady) removeHls(existing.id).catch(() => {});
     return res.status(204).end();
   }
 

@@ -57,6 +57,29 @@ export function makeVideoThumb(fileId, objectKey, mimeType) {
     .catch((e) => console.warn('[vthumb] failed:', e?.message));
 }
 
+/**
+ * Strip the two index-only columns from a File row before it goes over the wire.
+ *
+ * `embedding` is a 384-float JSON string and `ocrText` is the file's ENTIRE
+ * extracted text — a whole PDF's contents, or a video's transcript. Both exist
+ * to be searched against server-side; no client code reads either. Returned on a
+ * 200-row folder page or a 100-row search hit they dominate the response,
+ * turning an ordinary listing into megabytes of payload carrying nothing the UI
+ * renders. /semantic-search always dropped them; every list endpoint owes the
+ * same treatment, so do it in one place rather than repeating the destructure.
+ *
+ * Single-file reads deliberately do NOT use this — /files/:id is one row, and
+ * ocrText there is the file's own indexed text.
+ */
+export function stripIndexFields(file) {
+  if (!file) return file;
+  const { embedding, ocrText, ...rest } = file;
+  return rest;
+}
+
+/** Map stripIndexFields over a list of File rows. */
+export const stripIndexFieldsAll = (files) => files.map(stripIndexFields);
+
 /** Bump File.accessedAt asynchronously (best-effort, no await). */
 export function bumpAccessed(id) {
   prisma.file.updateMany({ where: { id }, data: { accessedAt: new Date() } }).catch(() => {});

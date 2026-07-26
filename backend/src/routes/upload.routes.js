@@ -17,6 +17,7 @@ import {
   completeMultipart,
   initiateMultipart,
   objectKeyFor,
+  putObjectBuffer,
   removeObject,
   uploadPart,
 } from '../services/storage.service.js';
@@ -247,7 +248,14 @@ router.post(
     if (s.completed) throw badRequest('Already completed');
 
     const parts = JSON.parse(s.parts);
-    if (parts.length === 0) throw badRequest('No parts uploaded');
+    // A 0-byte file legitimately has NO parts: multipart cannot store a
+    // zero-byte part, so the client sends none and the empty-body rejection in
+    // the part route stands. Requiring at least one part made an empty file
+    // impossible to upload rather than merely unusual. Guard on the DECLARED
+    // size, so a partless session for a non-empty file is still the incomplete
+    // upload it has always been.
+    const isEmptyFile = BigInt(s.size) === 0n;
+    if (parts.length === 0 && !isEmptyFile) throw badRequest('No parts uploaded');
 
     const total = parts.reduce((n, p) => n + (p.size || 0), 0);
 
@@ -297,7 +305,16 @@ router.post(
       throw payloadTooLarge();
     }
 
-    await completeMultipart(s.objectKey, s.uploadId, parts);
+    if (parts.length === 0) {
+      // Zero parts: completeMultipartUpload would be rejected (a multipart
+      // upload needs at least one part), so release the reservation and write
+      // the empty object directly. The rest of the flow is unchanged — the File
+      // row, the version row and the quota charge all treat it as 0 bytes.
+      await abortMultipart(s.objectKey, s.uploadId);
+      await putObjectBuffer(s.objectKey, Buffer.alloc(0), s.mimeType);
+    } else {
+      await completeMultipart(s.objectKey, s.uploadId, parts);
+    }
 
     // If this is a replace: remove the old File row (versions cascade) and
     // refund its bytes, then create the new File with the same name/folder. The

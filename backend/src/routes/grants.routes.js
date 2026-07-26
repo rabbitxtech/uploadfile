@@ -6,6 +6,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
 import { notify } from '../services/notify.service.js';
+import { stripIndexFields } from './files/_shared.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -48,7 +49,12 @@ router.get(
     res.json({
       files: fileGrants
         .filter((g) => g.file && !g.file.trashedAt && g.file.ownerId !== req.user.id)
-        .map((g) => ({ ...g.file, permission: g.permission, grantId: g.id, viaGroup: g.group?.name || null })),
+        .map((g) => ({
+          ...stripIndexFields(g.file),
+          permission: g.permission,
+          grantId: g.id,
+          viaGroup: g.group?.name || null,
+        })),
       folders: folderGrants
         .filter((g) => g.folder && !g.folder.trashedAt && g.folder.ownerId !== req.user.id)
         .map((g) => ({ ...g.folder, permission: g.permission, grantId: g.id, viaGroup: g.group?.name || null })),

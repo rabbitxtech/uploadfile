@@ -110,6 +110,25 @@ describe('chunked upload → quota accounting', () => {
     expect(after.usedBytes).toBe(0n); // nothing charged for a rejected upload
   });
 
+  // A 0-byte file is ordinary (touch a file, export an empty log) and the client
+  // sends every upload through this flow — there is no single-shot fallback in
+  // Uploader.jsx. The part route rejected an empty body outright, so `complete`
+  // was never reached and the upload could not succeed at all. The frontend unit
+  // test did not catch it because its fetch stub answers 200 to any part,
+  // including the empty one; only driving the real route shows the failure.
+  it('accepts a 0-byte file through the chunked flow', async () => {
+    const user = await makeUser();
+    const { auth } = await login(user);
+
+    const res = await uploadChunked(auth, { filename: 'empty.txt', bytes: 0 });
+
+    expect(res.status).toBe(201);
+    expect(res.body.name).toBe('empty.txt');
+    expect(String(res.body.size)).toBe('0');
+    const after = await prisma.user.findUnique({ where: { id: user.id } });
+    expect(after.usedBytes).toBe(0n);
+  });
+
   // The quota is only checked at init (declared size) and at complete (actual
   // bytes). Nothing stopped a client from declaring size:0 and then streaming
   // unlimited parts into MinIO — complete would refuse to create the File row,

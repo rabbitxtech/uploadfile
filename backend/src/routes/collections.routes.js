@@ -5,6 +5,7 @@ import { prisma } from '../config/prisma.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, notFound } from '../utils/errors.js';
+import { stripIndexFieldsAll } from './files/_shared.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -127,7 +128,9 @@ router.get(
       name: collection.name,
       kind: collection.kind,
       filter: collection.filter ? JSON.parse(collection.filter) : null,
-      files,
+      // fileInclude carries no `select`, so these rows arrive with every scalar
+      // column — including the whole of ocrText. See stripIndexFields.
+      files: stripIndexFieldsAll(files),
     });
   }),
 );

@@ -306,6 +306,65 @@ describe('folder listing', () => {
   });
 });
 
+// `ocrText` is a file's ENTIRE extracted text (a whole PDF, or a video's
+// transcript) and `embedding` is a 384-float JSON string. Both are index-only:
+// searched against server-side, never read by any client code. They ride along
+// by default because these routes use `include` with no `select`, so a single
+// added relation silently reinstates them — which is why this is pinned rather
+// than left to review. Listings are where it hurts: 200 files a page.
+describe('list responses omit the index-only columns', () => {
+  const OCR = 'the full extracted text of the document';
+  const EMBEDDING = JSON.stringify(Array.from({ length: 384 }, () => 0.5));
+
+  async function seed() {
+    const user = await makeUser();
+    const { auth } = await login(user);
+    const folder = await makeFolder(user);
+    const file = await makeFile(user, {
+      name: 'indexed.txt',
+      folderId: folder.id,
+      starred: true,
+      ocrText: OCR,
+      embedding: EMBEDDING,
+    });
+    await prisma.file.update({ where: { id: file.id }, data: { accessedAt: new Date() } });
+    return { user, auth, folder, file };
+  }
+
+  const listings = [
+    ['folder listing', (folder) => `/api/folders?parentId=${folder.id}`],
+    ['recent', () => '/api/files/recent'],
+    ['starred', () => '/api/files/starred'],
+    // Matches on the OCR text itself — the row is found BY ocrText and must
+    // still not return it.
+    ['search', () => `/api/files/search?q=${encodeURIComponent('extracted text')}`],
+  ];
+
+  for (const [label, url] of listings) {
+    it(`${label} returns neither ocrText nor embedding`, async () => {
+      const { auth, folder, file } = await seed();
+
+      const res = await request(app).get(url(folder)).set('Authorization', auth);
+
+      expect(res.status).toBe(200);
+      const row = res.body.files.find((f) => f.id === file.id);
+      expect(row).toBeDefined(); // the row is still returned…
+      expect(row.name).toBe('indexed.txt'); // …with the fields the UI needs…
+      expect(row).not.toHaveProperty('ocrText'); // …and without the payload.
+      expect(row).not.toHaveProperty('embedding');
+    });
+  }
+
+  it('a single-file read still carries its own indexed text', async () => {
+    const { auth, file } = await seed();
+
+    const res = await request(app).get(`/api/files/${file.id}`).set('Authorization', auth);
+
+    expect(res.status).toBe(200);
+    expect(res.body.ocrText).toBe(OCR);
+  });
+});
+
 // I3 — @mentions in comments. The mention token cannot contain '@' (that is
 // what ends it), so matching User.email exactly only ever resolved
 // username-style accounts; self-registered users all have real addresses.

@@ -55,7 +55,11 @@ export async function chunkedUpload(
     done = new Set();
   }
 
-  const total = Math.max(1, Math.ceil(file.size / chunkSize));
+  // An empty file has NO parts, not one empty part. S3/MinIO multipart cannot
+  // store a zero-byte part, so the backend rejects an empty body outright
+  // ("Empty chunk") — clamping this to 1 sent exactly that and made a 0-byte
+  // file impossible to upload, since every file goes through this flow.
+  const total = Math.ceil(file.size / chunkSize);
   const token = useAuth.getState().token;
 
   // Count already-held parts as transferred so a resumed upload does not report

@@ -54,6 +54,7 @@ import {
   ownedWhere,
   ownerScope,
   mimeCategory,
+  stripIndexFieldsAll,
   STREAM_EXPIRY,
   STREAM_MAX_AGE_MS,
   STREAM_COOKIE,
@@ -146,7 +147,7 @@ router.get(
       take: 50,
       include: { tags: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
     });
-    res.json({ files });
+    res.json({ files: stripIndexFieldsAll(files) });
   }),
 );
 
@@ -159,7 +160,7 @@ router.get(
       orderBy: { updatedAt: 'desc' },
       include: { tags: true, folder: true, owner: { select: { id: true, name: true, email: true } } },
     });
-    res.json({ files });
+    res.json({ files: stripIndexFieldsAll(files) });
   }),
 );
 
@@ -813,6 +814,14 @@ router.post(
     const ext = req.file.originalname.includes('.') ? req.file.originalname.split('.').pop() : '';
     const key = objectKeyFor(file.ownerId, ext);
     await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
+    // Every other write path stores the checksum on BOTH the File and its
+    // version row, and the rest of the codebase reads File.checksum as "the hash
+    // of the CURRENT bytes". Leaving it at the previous version's value here made
+    // this the one path that desynced it: /duplicates then groups the file with
+    // whatever still matches its superseded content, and collab-save's
+    // `checksum === file.checksum` short-circuit reads a fresh upload as
+    // "unchanged" and silently drops the next edit.
+    const checksum = sha256Buffer(req.file.buffer);
 
     const nextVersion = file.currentVersion + 1;
     await prisma.fileVersion.create({
@@ -821,6 +830,7 @@ router.post(
         version: nextVersion,
         objectKey: key,
         size: BigInt(req.file.size),
+        checksum,
       },
     });
     const updated = await prisma.file.update({
@@ -830,6 +840,7 @@ router.post(
         size: BigInt(req.file.size),
         mimeType: req.file.mimetype,
         currentVersion: nextVersion,
+        checksum,
         // New content invalidates the old renditions (they'd play stale video).
         hlsReady: false,
       },
