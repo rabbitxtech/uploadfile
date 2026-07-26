@@ -73,6 +73,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
 - **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
 - **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
+- **Collections can't be used to read someone else's files** — a collection is yours, but its contents are a join table, so adding a file checks that *you own it*; you can't name a stranger's file id and have the listing hand back its contents (including extracted OCR text)
 - Refuses to start in prod without a strong `JWT_SECRET`, `POSTGRES_PASSWORD` or MinIO credentials; datastore ports are closed in prod; redacted structured logs
 
 ### Data integrity
@@ -80,6 +81,8 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Parts can't be lost to a retry** — the part list is written with a compare-and-set, so overlapping or retried chunk uploads can't drop each other's entries
 - **Trash auto-clean won't take a file you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
+- **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
+- **Deleting an account takes its storage with it** — the file records are the only index of what's in object storage, and they disappear with the account, so the objects (originals, thumbnails, video renditions) are removed first; otherwise they'd linger with nothing left to attribute them to
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -375,9 +378,15 @@ break against real SQL and real cascades: quota bookkeeping (net-cost replace,
 the per-part byte ceiling, the floor-at-zero refund, refunding *every* version),
 chunked-upload completeness (missing parts, short totals, concurrent parts, the
 10000-part cap), comment @mentions, owner-scoped folder grants, trashed-file
-share links, and the folder-cascade safety shared by the retention sweep and
-"empty trash". It is excluded from `npm test` by `vitest.config.js`, which is why
-the unit suite needs no database.
+share links, the folder-cascade safety shared by the retention sweep and
+"empty trash", the WebDAV overwrite's version collapse and net-cost quota check,
+owner-scoped collection membership, and the object cleanup a user deletion owes
+before its cascade destroys the only record of what was stored. It is excluded
+from `npm test` by `vitest.config.js`, which is why the unit suite needs no
+database.
+
+Six files: `files-access.test.js`, `upload-replace.test.js`, `retention.test.js`,
+`webdav-overwrite.test.js`, `collections.test.js`, `user-delete.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
