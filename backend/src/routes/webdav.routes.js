@@ -338,6 +338,24 @@ router.all('*', async (req, res, next) => {
   if (folder) {
     if (newParent && (newParent.path === folder.path || newParent.path.startsWith(folder.path + '/')))
       return res.status(409).end('Cannot move into itself');
+    // (ownerId, path) must stay unique among LIVE folders — the REST rename
+    // enforces it via assertNoSiblingCollision, and this route is the other way
+    // in. Three separate things treat that pair as a subtree identity: the
+    // soft-delete and the rename both select descendants with
+    // `path startsWith parent + '/'`, deletableFolderIds decides what a bulk
+    // purge may cascade into, and grantCoversFolder resolves folder shares.
+    // Letting a MOVE land two live folders on one path makes every one of those
+    // prefix queries hit BOTH subtrees: deleting one trashes the other's files,
+    // and renaming one rewrites the other's descendants into a tree whose
+    // children no longer match their parent. MKCOL already refuses duplicates
+    // (405 above); a move that renames into an existing sibling did not.
+    if (destPath !== folder.path) {
+      const clash = await prisma.folder.findFirst({
+        where: { ownerId: owner, path: destPath, trashedAt: null, id: { not: folder.id } },
+        select: { id: true },
+      });
+      if (clash) return res.status(412).end('A folder with that name already exists here');
+    }
     const oldPath = folder.path;
     const descendants = await prisma.folder.findMany({
       where: { ownerId: owner, path: { startsWith: oldPath + '/' } },
@@ -360,11 +378,38 @@ router.all('*', async (req, res, next) => {
 
   const file = await findFile(owner, from);
   if (!file) return res.status(404).end();
+  // Moving onto an existing name used to just land a SECOND live file with the
+  // same name in the destination folder. findFile()/the PUT overwrite both
+  // resolve a name with findFirst, so from then on which of the two a client
+  // reads, overwrites or deletes is decided by row order — the other becomes
+  // unreachable over WebDAV while still being charged for. RFC 4918 says a MOVE
+  // onto an existing resource either replaces it (Overwrite: T, the default) or
+  // fails with 412; honour that instead of silently duplicating.
+  const target = await prisma.file.findFirst({
+    where: {
+      ownerId: owner,
+      folderId: newParent?.id ?? null,
+      name: newName,
+      trashedAt: null,
+      id: { not: file.id },
+    },
+    select: { id: true },
+  });
+  if (target) {
+    if (String(req.headers.overwrite || 'T').toUpperCase() === 'F') {
+      return res.status(412).end('Destination exists');
+    }
+    // Overwrite: trash the displaced file rather than hard-deleting it. Its
+    // bytes stay on the quota exactly as any other trashed file's do, and the
+    // existing trash/retention paths refund them — this route must not grow a
+    // fifth hard-delete path with its own version-sum refund.
+    await prisma.file.update({ where: { id: target.id }, data: { trashedAt: new Date() } });
+  }
   await prisma.file.update({
     where: { id: file.id },
     data: { name: newName, folderId: newParent?.id ?? null },
   });
-  res.status(201).end();
+  res.status(target ? 204 : 201).end();
 });
 
 // ---- LOCK / UNLOCK (faked so Finder/Explorer permit writes) ----
