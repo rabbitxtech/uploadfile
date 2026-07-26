@@ -107,6 +107,19 @@ export async function syncVectorColumn(fileId, vector) {
   }
 }
 
+// Serialize indexing jobs — at most one tesseract/pdftoppm + embedding at a
+// time, mirroring hls.service.js and transcribe.service.js. indexFile() itself
+// stays directly callable (and awaitable) for the single post-upload case; this
+// is for the paths that enqueue many at once, where running them concurrently
+// would fork a CPU-heavy CLI per file.
+let indexQueue = Promise.resolve();
+
+/** Fire-and-forget indexing that shares one worker with every other caller. */
+export function queueIndexFile(fileId) {
+  indexQueue = indexQueue.then(() => indexFile(fileId)).catch(() => {});
+  return indexQueue;
+}
+
 // Index one file: OCR (if applicable) + embedding of name + ocrText. Best-effort.
 export async function indexFile(fileId) {
   try {

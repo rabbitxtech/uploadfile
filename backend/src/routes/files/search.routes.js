@@ -5,7 +5,8 @@
 import { Router } from 'express';
 import { prisma } from '../../config/prisma.js';
 import { asyncHandler } from '../../utils/async.js';
-import { indexFile, embed, cosine } from '../../services/ai.service.js';
+import { queueIndexFile, embed, cosine } from '../../services/ai.service.js';
+import { requireRole } from '../../middleware/auth.js';
 import { pgvectorEnabled, toVectorLiteral } from '../../utils/vector.js';
 import { ciContains, stripIndexFields, stripIndexFieldsAll } from './_shared.js';
 
@@ -104,20 +105,29 @@ searchRouter.get(
 );
 
 // K1/K4 — (re)index the caller's files that have no embedding yet (background).
-// NOTE: despite being described as admin-only in the docs, there is no role
-// check here — but it only ever queues the CALLER's own files, so it is not a
-// privilege issue; it is a "this user can start a background job" one.
+//
+// Admin-only, which is how the README, the routing map and the OpenAPI spec have
+// always described it; the role check was simply missing. It only ever queues
+// the CALLER's own files, so this was never a privilege-escalation hole — it is
+// a resource one. Each queued file shells out to tesseract (and pdftoppm for a
+// PDF, rasterising up to 8 pages) and then runs a transformers.js embedding, so
+// a single call can start up to 1000 CPU-heavy jobs. Nothing stopped an ordinary
+// user from firing it repeatedly, and because the backfill loop lived inside the
+// request handler, every call started its OWN loop: the jobs stacked instead of
+// queueing, which is exactly the pile-up that hls.service and transcribe.service
+// each avoid with a module-level queue. indexFile is now serialised the same way
+// (see ai.service.js), so overlapping calls share one worker rather than
+// multiplying ffmpeg/tesseract processes.
 searchRouter.post(
   '/reindex',
+  requireRole('admin'),
   asyncHandler(async (req, res) => {
     const files = await prisma.file.findMany({
       where: { ownerId: req.user.id, trashedAt: null, embedding: null },
       select: { id: true },
       take: 1000,
     });
-    (async () => {
-      for (const f of files) await indexFile(f.id);
-    })().catch(() => {});
+    for (const f of files) queueIndexFile(f.id);
     res.json({ queued: files.length });
   }),
 );
