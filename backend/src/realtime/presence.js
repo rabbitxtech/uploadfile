@@ -30,9 +30,14 @@ import { fileAccessLevel } from '../services/access.service.js';
  */
 async function canSeePresence(user, fileId) {
   try {
+    // `trashedAt` is selected even though the where-clause already excludes a
+    // trashed row: fileAccessLevel reads it to decide whether a GRANT still
+    // resolves, and a `select` that drops the column would hand it `undefined`
+    // — which reads as "not trashed" and quietly re-opens grant access on a
+    // deleted file. Keeping the column here means the two checks can't drift.
     const file = await prisma.file.findFirst({
       where: { id: fileId, trashedAt: null },
-      select: { id: true, ownerId: true, folderId: true },
+      select: { id: true, ownerId: true, folderId: true, trashedAt: true },
     });
     if (!file) return false;
     return !!(await fileAccessLevel(user, file));

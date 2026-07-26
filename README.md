@@ -45,6 +45,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Share to a specific user or to a group** (grants) — recipients see it under "Shared with me" (group shares marked `via "<group>"`)
 - Public folder share renders a list + "Download folder as ZIP"
 - **Trashing kills the share links on it** — for a file *or* a folder. The link stops resolving, stops serving bytes, stops disclosing the target's name, and (for a drop-box) stops accepting uploads, so moving something to the trash is a real "un-share it"
+- **Trashing revokes the people you shared it with, too** — the same rule now covers grants, not just public links: once you delete a shared file or folder, the people (and groups) you shared it with lose access to it, exactly as "Shared with me" already implied by hiding it. Restoring it gives the access back
 - Owner notified when shared content is downloaded; per-share access log
 
 ### Real-time & access
@@ -97,6 +98,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **The approval gate covers the WebDAV mount too** — every upload route in the web app refuses an account an admin hasn't approved yet, but the WebDAV drive had no such check, so the same account could mount it in Finder/Explorer and write as much as its quota allowed; creating content over WebDAV is now held to the same rule, while browsing, deleting and moving stay open as they are in the UI
 - **A long upload can't land in a folder that was deleted while it ran** — a chunked upload can take hours, and the destination folder was only checked when it started; trashing that folder mid-upload used to file the finished file live inside a hidden parent, absent from both My Files and the trash while still counted against the quota. The file now lands at the top level, where it's visible and can be moved
 - **Seeing who else is viewing a file requires being able to open it** — the live "who's here" indicator broadcasts each viewer's name and email to everyone in the room, but joining a room was gated on nothing more than being logged in, so anyone holding a file id could collect the identities of people viewing a file they had no access to; joining now goes through the same permission check as opening the file
+- **Deleting a shared file actually cuts off the people you shared it with** — trashing already killed *public links*, and "Shared with me" already stopped listing the item, so deleting something looked like un-sharing it from both ends. The access itself outlived the listing: anyone you'd shared with who still had the id — ids travel in links and pasted URLs — could keep opening the file, downloading its bytes, and getting a direct storage URL for it, and could still read the extracted text of the whole document, while the owner watched it sit in their trash. Grants (to a person *or* a group, on the file or on a folder above it) now stop resolving the moment the item is trashed, and start working again when it's restored. You keep full access to your own trashed files, which is what the Trash screen needs
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -407,18 +409,20 @@ a trashed file, the ancestor restore that keeps a rescued item reachable, the
 refusal to rename or move a trashed one, the public folder share that dies with
 its folder, the refusal to move a folder under a trashed parent, the
 admin-approval gate on the WebDAV write verbs, the destination folder re-checked
-when a chunked upload completes, and the read-access check a presence room owes
-before it broadcasts viewers' names and addresses. It is excluded from
+when a chunked upload completes, the read-access check a presence room owes
+before it broadcasts viewers' names and addresses, and the grant access that has
+to end when a shared file or folder is trashed (while the owner keeps theirs).
+It is excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Eighteen files: `files-access.test.js`, `upload-replace.test.js`,
+Nineteen files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
 `collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
 `auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
 `trashed-writes.test.js`, `trash-restore.test.js`,
 `file-patch-trashed.test.js`, `share-folder-trashed.test.js`,
 `folder-move-trashed-parent.test.js`, `upload-gates.test.js`,
-`presence-access.test.js`.
+`presence-access.test.js`, `trashed-grant-access.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \

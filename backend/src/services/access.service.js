@@ -48,10 +48,30 @@ function grantCoversFolder(grantFolder, folder) {
 //  - being the owner, or an admin (full access)
 //  - a direct FileGrant on the file (to the user or one of their groups)
 //  - a FolderGrant on the file's folder or any ancestor folder (path prefix)
+//
+// TRASHING REVOKES GRANT-DERIVED ACCESS. Trashing is the user's "un-share it"
+// action, and the rest of the codebase already treats it that way: a public
+// share link 404s once its target is trashed (assertShareTargetLive), and
+// GET /api/grants/shared-with-me filters trashed rows out of the listing, so
+// the file disappears from the grantee's "Shared with me" the moment the owner
+// deletes it. Nothing enforced it on the file routes themselves, so the access
+// simply outlived the listing: a grantee who had kept the id (it travels in
+// links and pasted URLs) could still call GET /files/:id — which returns the
+// row INCLUDING ocrText, a file's entire extracted text — and /download,
+// /preview and /url, the last handing back a presigned MinIO URL for the real
+// bytes. The owner sees the file sitting in their trash and has every reason to
+// believe deleting it stopped the sharing.
+//
+// Owner and admin deliberately keep access: the Trash page reads the row to
+// list it, and restoring then downloading is the ordinary flow. So the gate
+// belongs here, below the owner/admin returns and above the grant lookups —
+// the same shape as the write-side trashed gates, which likewise only ever
+// restrict what a GRANT reaches.
 export async function fileAccessLevel(user, file) {
   if (!file) return null;
   if (user.role === 'admin') return 'admin';
   if (file.ownerId === user.id) return 'owner';
+  if (file.trashedAt) return null;
 
   let level = null;
   const groupIds = await userGroupIds(user.id);
@@ -72,9 +92,13 @@ export async function fileAccessLevel(user, file) {
     if (folder) {
       const grants = await prisma.folderGrant.findMany({
         where: granteeWhere(user.id, groupIds),
-        include: { folder: { select: { path: true, ownerId: true } } },
+        include: { folder: { select: { path: true, ownerId: true, trashedAt: true } } },
       });
       for (const g of grants) {
+        // A grant whose own folder has been trashed reaches nothing, exactly as
+        // in folderAccessLevel — trashing the shared folder is how an owner
+        // un-shares its contents.
+        if (g.folder?.trashedAt) continue;
         if (!grantCoversFolder(g.folder, folder)) continue;
         if (g.permission === 'edit') level = 'edit';
         else if (!level) level = 'view';
@@ -91,18 +115,33 @@ export function canEdit(level) {
 // Resolve a user's access level to a folder (direct grant or grant on an
 // ancestor folder, to the user or one of their groups).
 // Returns 'owner' | 'admin' | 'edit' | 'view' | null.
+//
+// Trashing revokes grant-derived access here for the same reason it does on a
+// file, and the inconsistency was visible in the same place: GET
+// /api/grants/shared-with-me filters trashed folders out of "Shared with me",
+// while the folder routes kept resolving the grant. GET /folders/:id/breadcrumb
+// went on answering 200 with the folder's NAME for a folder the owner had
+// deleted, and a grant on a trashed ancestor still reached down the tree.
+//
+// The grant's OWN folder is checked too, not just the target: a grant made on
+// "/projects" must stop resolving once "/projects" is trashed, or trashing the
+// shared folder itself would revoke nothing. Trashing a folder stamps its whole
+// subtree, so both ends are normally trashed together — but restore un-trashes
+// only the ids it is handed, so the two can legitimately diverge.
 export async function folderAccessLevel(user, folder) {
   if (!folder) return null;
   if (user.role === 'admin') return 'admin';
   if (folder.ownerId === user.id) return 'owner';
+  if (folder.trashedAt) return null;
 
   const groupIds = await userGroupIds(user.id);
   const grants = await prisma.folderGrant.findMany({
     where: granteeWhere(user.id, groupIds),
-    include: { folder: { select: { path: true, ownerId: true } } },
+    include: { folder: { select: { path: true, ownerId: true, trashedAt: true } } },
   });
   let level = null;
   for (const g of grants) {
+    if (g.folder?.trashedAt) continue; // the shared folder itself is deleted
     if (!grantCoversFolder(g.folder, folder)) continue;
     if (g.permission === 'edit') level = 'edit';
     else if (!level) level = 'view';
