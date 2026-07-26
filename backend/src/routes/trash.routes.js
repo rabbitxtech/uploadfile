@@ -53,24 +53,95 @@ router.post(
       })
       .parse(req.body);
 
+    // Resolve the targets first — the ancestor walk below needs each item's own
+    // owner and parent, and `ownerScope(req)` is `{}` for an admin, so the rows
+    // being restored are the only thing that says whose tree to climb.
+    const [targetFiles, targetFolders] = await Promise.all([
+      data.fileIds?.length
+        ? prisma.file.findMany({
+            where: { id: { in: data.fileIds }, ...ownerScope(req) },
+            select: { id: true, ownerId: true, folderId: true },
+          })
+        : Promise.resolve([]),
+      data.folderIds?.length
+        ? prisma.folder.findMany({
+            where: { id: { in: data.folderIds }, ...ownerScope(req) },
+            select: { id: true, ownerId: true, parentId: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    // Un-trashing only the row the user clicked leaves it live inside an
+    // ancestor that is still trashed — and neither listing shows it then:
+    // GET /api/folders filters `trashedAt: null` and so hides the ancestor
+    // (there is no path to browse through it), while GET /api/trash lists
+    // `trashedAt: { not: null }` and so no longer lists the item itself. The row
+    // stays live and billed against the owner's quota with no way to reach it
+    // from the UI, and no error anywhere. Restoring a file out of a trashed
+    // folder is the ordinary way to use the Trash page — it lists trashed files
+    // and trashed folders in two separate tables — so this was one click away.
+    //
+    // The walk goes UP only. Restoring downward would undo the user's choice:
+    // they picked one item out of a trashed folder, and the folder's other
+    // contents must stay in the trash. Ancestors are the minimum needed to make
+    // the restored row reachable.
+    //
+    // Climbing by parentId (not by the `path` prefix) is deliberate:
+    // `Folder.path` is names-only and not namespaced per owner, so a prefix
+    // match can cross into a stranger's identically-named tree. Each chain is
+    // additionally pinned to its own item's ownerId for the same reason.
+    const ancestorIds = new Set();
+    const seen = new Set();
+    for (const item of [
+      ...targetFiles.map((f) => ({ ownerId: f.ownerId, parentId: f.folderId })),
+      ...targetFolders.map((f) => ({ ownerId: f.ownerId, parentId: f.parentId })),
+    ]) {
+      let cursor = item.parentId;
+      // Bounded by the folder depth; `seen` also stops a cycle from a corrupted
+      // parent chain turning this into an infinite loop.
+      while (cursor && !seen.has(cursor)) {
+        seen.add(cursor);
+        const parent = await prisma.folder.findFirst({
+          where: { id: cursor, ownerId: item.ownerId },
+          select: { id: true, parentId: true, trashedAt: true },
+        });
+        if (!parent) break;
+        if (parent.trashedAt) ancestorIds.add(parent.id);
+        cursor = parent.parentId;
+      }
+    }
+
     const ops = [];
-    if (data.fileIds?.length) {
+    if (targetFiles.length) {
       ops.push(
         prisma.file.updateMany({
-          where: { id: { in: data.fileIds }, ...ownerScope(req) },
+          where: { id: { in: targetFiles.map((f) => f.id) } },
           data: { trashedAt: null },
         }),
       );
     }
-    if (data.folderIds?.length) {
+    if (targetFolders.length) {
       ops.push(
         prisma.folder.updateMany({
-          where: { id: { in: data.folderIds }, ...ownerScope(req) },
+          where: { id: { in: targetFolders.map((f) => f.id) } },
+          data: { trashedAt: null },
+        }),
+      );
+    }
+    // Ancestors are restored alongside, but deliberately NOT counted in
+    // `restored` — that number is what the client reports back to the user, and
+    // it should reflect what they asked for, not the plumbing it took.
+    if (ancestorIds.size) {
+      ops.push(
+        prisma.folder.updateMany({
+          where: { id: { in: [...ancestorIds] } },
           data: { trashedAt: null },
         }),
       );
     }
     const results = await prisma.$transaction(ops);
+    // Drop the ancestor op's count before summing, for the reason above.
+    if (ancestorIds.size) results.pop();
     const restored = results.reduce((n, r) => n + r.count, 0);
     if (restored) emitFileChange(req.user.id); // Task5 #5
     res.json({ restored });

@@ -547,7 +547,13 @@ router.post(
 router.post(
   '/:id/optimize',
   asyncHandler(async (req, res) => {
-    const file = await prisma.file.findFirst({ where: ownedWhere(req, req.params.id) });
+    // Same rule as the version upload: a trashed file is pending deletion, and
+    // this kicks off a remux plus HLS/whisper backfill whose renditions the
+    // hard-delete paths only clean up via removeHls(). Don't start that work on
+    // a file that is on its way out.
+    const file = await prisma.file.findFirst({
+      where: { ...ownedWhere(req, req.params.id), trashedAt: null },
+    });
     if (!file) throw notFound('File');
     if (!canFaststart(file.mimeType)) throw badRequest('Not an optimizable video');
     await optimizeFileVideo(file.id);
@@ -752,7 +758,20 @@ router.patch(
       })
       .parse(req.body);
 
-    const file = await prisma.file.findUnique({ where: { id: req.params.id } });
+    // A trashed file is not a rename/move target. This is the single-file
+    // equivalent of the rule /bulk/move carries, and the route the UI actually
+    // drives for a rename or a drag-and-drop move. Moving one relocates an item
+    // the listing hides — nothing appears to happen, and the file resurfaces on
+    // restore in a folder the user never chose; renaming one changes the entry
+    // out from under them in the trash view, which lists the name.
+    //
+    // The gate belongs on the file rather than on `canEdit`: fileAccessLevel
+    // returns 'admin' for any file, so for an admin this filter is the only
+    // check in the way. The star toggle and the soft-delete deliberately keep
+    // working on a trashed row and so do NOT get this filter.
+    const file = await prisma.file.findFirst({
+      where: { id: req.params.id, trashedAt: null },
+    });
     if (!file) throw notFound('File');
     const level = await fileAccessLevel(req.user, file);
     if (!canEdit(level)) throw notFound('File');
@@ -805,7 +824,19 @@ router.post(
   upload.single('file'),
   asyncHandler(async (req, res) => {
     if (!req.file) throw badRequest('No file uploaded');
-    const file = await prisma.file.findFirst({ where: ownedWhere(req, req.params.id) });
+    // `trashedAt: null` is not optional here. A trashed file is on its way out:
+    // the retention sweep and both hard-delete paths refund the SUM of its
+    // FileVersion rows and remove every version's object. Minting a version on
+    // a trashed file charges the owner for bytes attached to a row the user
+    // can't see (the trash view lists File.size, not the history) and that they
+    // never asked to keep — and if the sweep runs between this quota charge and
+    // a restore, the file is gone while the bytes were only just added. Every
+    // other content-write path already refuses a trashed target: collab-save
+    // checks `file.trashedAt`, upload/init scopes `replaceFileId` to
+    // `trashedAt: null`, and the WebDAV PUT overwrite looks the file up with it.
+    const file = await prisma.file.findFirst({
+      where: { ...ownedWhere(req, req.params.id), trashedAt: null },
+    });
     if (!file) throw notFound('File');
     // Charge the quota to the file's owner (an admin may be acting on someone
     // else's file).
