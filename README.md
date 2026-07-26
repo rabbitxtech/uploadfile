@@ -7,7 +7,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 ### Auth & users
 - **Self-registration with email verification** — sign-up requires a real email and a confirmed password; a verification link is mailed, and login is blocked until it's clicked (resend supported). The first account auto-becomes a verified `admin`; admin-created accounts skip verification.
 - **Admin approval to upload** — self-registered users can log in and browse but **can't upload until an admin approves them** (admins are notified when a new user verifies; approve/revoke from the Users page). First-user/admin-created accounts are pre-approved.
-- Username **or** email login (regular usernames must be `letters/digits/. _ -`)
+- Username **or** email login (regular usernames must be `letters/digits/. _ -`) — both go in the request's `email` field, which accepts either
 - JWT auth with `admin` / `user` roles, per-user quota
 - **Two-factor authentication (TOTP)** — scan a QR with any authenticator app; login becomes password + 6-digit code, with 8 single-use recovery codes (shown once, stored hashed). Disabling 2FA requires password **and** a valid code.
 - **Session management** — every login is a revocable session; a "Active sessions" panel lists your devices (browser/OS, IP, last active) and lets you sign out one or all others. Changing your password signs out every other device; a reset signs out all.
@@ -313,9 +313,12 @@ docs/                   deploy.md, mail-setup.md, dns-mail.md, port.md,
 ## Routing map
 
 ```
-/api/auth              register, login, me, verify-email, resend-verification,
-                       2fa/verify (login step), 2fa/setup, 2fa/enable, 2fa/disable,
-                       forgot-password, reset-password,
+/api/auth              register, me, verify-email, reset-password,
+                       login  {email, password} — `email` also takes a
+                              plain username
+                       forgot-password / resend-verification  {identifier}
+                       2fa/verify (login step), 2fa/setup, 2fa/enable,
+                       2fa/disable,
                        sessions (list / revoke / revoke-others), logout
 /api/folders           list (?parentId=, admin ?ownerId=; files cursor-paginated
                        ?cursor=&take=&sort=&dir= → nextCursor/total), tree,
