@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { badRequest, forbidden, notFound } from '../utils/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { folderAccessLevel } from '../services/access.service.js';
 import { stripIndexFieldsAll } from './files/_shared.js';
 import {
@@ -20,6 +20,42 @@ router.use(requireAuth);
 function joinPath(parentPath, name) {
   if (parentPath === '/' || !parentPath) return '/' + name;
   return parentPath + '/' + name;
+}
+
+/**
+ * Refuse a folder name that would collide with an existing sibling.
+ *
+ * `Folder.path` is denormalised from folder NAMES, and the codebase treats
+ * (ownerId, path) as a subtree identity in three separate places: the soft-delete
+ * and rename here both match descendants with `path startsWith parent + '/'`,
+ * `deletableFolderIds` decides what a bulk purge may cascade into, and
+ * `grantCoversFolder` resolves folder shares. Nothing enforced that the identity
+ * is actually unique, so two siblings could both sit at "/docs" — and then every
+ * one of those path-prefix queries hit BOTH subtrees:
+ *
+ *   - deleting one "/docs" trashed the other's children and their files, while
+ *     the sibling itself stayed live, so the files vanished from a folder the
+ *     user never touched;
+ *   - renaming one "/docs" to "/archive" rewrote the other's descendants too,
+ *     leaving a child whose path ("/archive/sub") no longer matches its actual
+ *     parent ("/docs") — a permanently inconsistent tree that then feeds the
+ *     grant and cascade checks.
+ *
+ * WebDAV MKCOL already rejected duplicates (405); the REST route was the one way
+ * in that did not. Uniqueness is enforced here rather than by a DB constraint
+ * because trashed folders keep their path and must not block a live re-create.
+ */
+async function assertNoSiblingCollision(ownerId, path, excludeId = null) {
+  const clash = await prisma.folder.findFirst({
+    where: {
+      ownerId,
+      path,
+      trashedAt: null,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+    select: { id: true },
+  });
+  if (clash) throw conflict('A folder with that name already exists here');
 }
 
 // Admin can view any user's tree by passing `?ownerId=`; non-admins always
@@ -161,12 +197,18 @@ router.post(
       .object({ name: z.string().min(1).max(255), parentId: z.string().nullable().optional() })
       .parse(req.body);
 
+    // A trashed parent is not a place anything can be created: the child would
+    // be live inside a folder the listing hides, and a later restore of the
+    // parent is the only thing that would ever surface it again.
     const parent = data.parentId
-      ? await prisma.folder.findFirst({ where: { id: data.parentId, ownerId: req.user.id } })
+      ? await prisma.folder.findFirst({
+          where: { id: data.parentId, ownerId: req.user.id, trashedAt: null },
+        })
       : null;
     if (data.parentId && !parent) throw notFound('Parent folder');
 
     const path = joinPath(parent?.path ?? '/', data.name);
+    await assertNoSiblingCollision(req.user.id, path);
 
     const folder = await prisma.folder.create({
       data: {
@@ -214,6 +256,13 @@ router.patch(
 
     const newName = data.name ?? cur.name;
     const newPath = joinPath(parentPath, newName);
+
+    // Same rule as create, against the folder's own owner (an admin may be
+    // renaming someone else's). Excluding `cur.id` keeps a no-op rename — and a
+    // move that doesn't change the path — from colliding with itself.
+    if (newPath !== cur.path) {
+      await assertNoSiblingCollision(scopeOwner, newPath, cur.id);
+    }
 
     const updated = await prisma.$transaction(async (tx) => {
       // Update self

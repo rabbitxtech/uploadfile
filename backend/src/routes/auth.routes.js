@@ -12,6 +12,7 @@ import { authLimiter } from '../middleware/ratelimit.js';
 import { audit, clientIp } from '../services/audit.service.js';
 import { sendPasswordReset, sendVerifyEmail } from '../services/mail.service.js';
 import { startSession, revokeUserSessions } from '../services/session.service.js';
+import { findUserByCredential } from '../utils/credential.js';
 import {
   generateSetup,
   generateRecoveryCodes,
@@ -173,7 +174,7 @@ router.post(
   '/resend-verification',
   asyncHandler(async (req, res) => {
     const { identifier: id } = z.object({ identifier: z.string().trim().min(1) }).parse(req.body);
-    const user = await prisma.user.findUnique({ where: { email: id.toLowerCase() } });
+    const user = await findUserByCredential(id);
     if (user && !user.emailVerified) {
       await issueVerification(user);
       audit('verification_resent', { userId: user.id, ip: clientIp(req) });
@@ -189,7 +190,7 @@ router.post(
       .object({ email: z.string().trim().min(1), password: z.string() })
       .parse(req.body);
     const ip = clientIp(req);
-    const user = await prisma.user.findUnique({ where: { email: data.email } });
+    const user = await findUserByCredential(data.email);
     if (!user) {
       audit('login_failed', { meta: { identifier: data.email }, ip });
       throw unauthorized('Invalid credentials');
@@ -308,7 +309,7 @@ router.post(
   '/forgot-password',
   asyncHandler(async (req, res) => {
     const { identifier: id } = z.object({ identifier: z.string().trim().min(1) }).parse(req.body);
-    const user = await prisma.user.findUnique({ where: { email: id } });
+    const user = await findUserByCredential(id);
     if (user) {
       const raw = crypto.randomBytes(32).toString('base64url');
       await prisma.token.create({

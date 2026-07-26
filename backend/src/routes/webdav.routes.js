@@ -15,6 +15,7 @@ import { assertQuota, addUsage, netCost, subUsage } from '../services/quota.serv
 import { sha256Buffer } from '../services/checksum.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { prisma } from '../config/prisma.js';
+import { findUserByCredential } from '../utils/credential.js';
 
 const router = Router();
 const BUCKET = process.env.MINIO_BUCKET || 'uploads';
@@ -41,7 +42,10 @@ router.use(async (req, res, next) => {
   }
   try {
     const [user, pass] = Buffer.from(hdr.slice(6), 'base64').toString('utf8').split(':');
-    const u = await prisma.user.findUnique({ where: { email: user } });
+    // Same credential rule as the REST login: self-registration stores the
+    // address lowercased, so matching only the raw input locked those users out
+    // of mounting their own drive with the address they signed up with.
+    const u = await findUserByCredential(user);
     if (!u || u.banned || !(await bcrypt.compare(pass || '', u.password))) {
       res.set('WWW-Authenticate', 'Basic realm="Uploader WebDAV"');
       return res.status(401).end('Invalid credentials');

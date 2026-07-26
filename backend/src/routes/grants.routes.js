@@ -7,6 +7,7 @@ import { asyncHandler } from '../utils/async.js';
 import { badRequest, forbidden, notFound } from '../utils/errors.js';
 import { notify } from '../services/notify.service.js';
 import { stripIndexFields } from './files/_shared.js';
+import { findUserByCredential } from '../utils/credential.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -129,7 +130,11 @@ router.post(
     let grantee = null;
     let group = null;
     if (data.identifier) {
-      grantee = await prisma.user.findUnique({ where: { email: data.identifier } });
+      // Same credential rule as login: self-registered accounts are stored
+      // lowercased, so sharing to the address exactly as its owner writes it
+      // ("Bob@Example.com") used to 404 with no hint that only the lowercase
+      // spelling resolves.
+      grantee = await findUserByCredential(data.identifier);
       if (!grantee) throw notFound('User to share with');
       if (grantee.id === req.user.id) throw badRequest('Cannot share with yourself');
     } else {
