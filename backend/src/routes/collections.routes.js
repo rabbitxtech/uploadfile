@@ -40,9 +40,16 @@ async function collectionFiles(collection, ownerId) {
       take: 200,
     });
   }
+  // Scope the read-back to the collection's owner, not just `trashedAt`. The
+  // m2m join is the only thing saying a file belongs here, so an unscoped read
+  // hands back whatever got connected — and `fileInclude` has no `select`, so
+  // that means every scalar column (ocrText, objectKey, checksum, size). The
+  // connect sites filter by owner, and this filter is the backstop: two
+  // independent checks, because a leak here is a silent cross-tenant read that
+  // looks like a perfectly ordinary collection listing.
   const full = await prisma.collection.findUnique({
     where: { id: collection.id },
-    include: { files: { where: { trashedAt: null }, include: fileInclude } },
+    include: { files: { where: { ownerId, trashedAt: null }, include: fileInclude } },
   });
   return full?.files || [];
 }
@@ -80,16 +87,27 @@ router.post(
       })
       .parse(req.body);
 
+    // Only connect files the user owns — same rule as POST /:id/files. A bare
+    // `connect` on the supplied ids attaches ANY file in the database, and since
+    // the collection itself is owned by the caller, GET /:id then serves those
+    // rows as their own: an authenticated cross-tenant read of every File
+    // column (ocrText holds the full extracted document text) that needs
+    // nothing but a file id.
+    const ownedIds =
+      data.kind === 'manual' && data.fileIds?.length
+        ? await prisma.file.findMany({
+            where: { id: { in: data.fileIds }, ownerId: req.user.id, trashedAt: null },
+            select: { id: true },
+          })
+        : [];
+
     const collection = await prisma.collection.create({
       data: {
         name: data.name,
         kind: data.kind,
         ownerId: req.user.id,
         filter: data.kind === 'smart' ? JSON.stringify(data.filter || {}) : null,
-        files:
-          data.kind === 'manual' && data.fileIds?.length
-            ? { connect: data.fileIds.map((id) => ({ id })) }
-            : undefined,
+        files: ownedIds.length ? { connect: ownedIds.map((f) => ({ id: f.id })) } : undefined,
       },
     });
     res.status(201).json(collection);
