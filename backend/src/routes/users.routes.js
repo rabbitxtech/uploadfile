@@ -10,6 +10,8 @@ import { env } from '../config/env.js';
 import { notify } from '../services/notify.service.js';
 import { audit, clientIp } from '../services/audit.service.js';
 import { revokeUserSessions } from '../services/session.service.js';
+import { removePrefix } from '../services/storage.service.js';
+import { removeHls } from '../services/hls.service.js';
 
 const router = Router();
 router.use(requireAuth);
@@ -214,8 +216,47 @@ router.delete(
     if (req.params.id === req.user.id) {
       return res.status(400).json({ error: 'Cannot delete self' });
     }
-    await prisma.user.delete({ where: { id: req.params.id } });
-    audit('user_delete', { userId: req.user.id, targetType: 'user', targetId: req.params.id, ip: clientIp(req) });
+    const target = await prisma.user.findUnique({ where: { id: req.params.id } });
+    if (!target) throw notFound('User');
+
+    // Belt-and-braces on the admin count, NOT a reachable bug today: the
+    // self-delete check above already means a caller can only ever target
+    // another admin, which implies at least two exist. It is here because the
+    // consequence of ever losing the last one is unrecoverable — the bootstrap
+    // that grants `admin` is gated on `user.count() === 0`, so with any user
+    // still present it can never fire again, leaving every requireRole('admin')
+    // route permanently unreachable with no in-app way back. Anything that
+    // weakens the self-check (a service token, a bulk-delete route) would make
+    // this the only thing standing between an admin and that state.
+    if (target.role === 'admin') {
+      const admins = await prisma.user.count({ where: { role: 'admin' } });
+      if (admins <= 1) throw badRequest('Cannot delete the last admin');
+    }
+
+    // Collect the object keys BEFORE deleting: `File.owner` is onDelete Cascade,
+    // so the File/FileVersion rows — the only record of which MinIO objects
+    // exist — vanish with the user. Deleting the rows without the objects leaves
+    // storage that nothing can ever attribute or reclaim, the same
+    // unreconcilable drift the version-sum refunds exist to prevent. HLS
+    // renditions are keyed by fileId (not userId), so they need the ids read out
+    // here; the file and thumbnail objects are both per-user prefixes.
+    const files = await prisma.file.findMany({
+      where: { ownerId: target.id },
+      select: { id: true },
+    });
+
+    await prisma.user.delete({ where: { id: target.id } });
+    audit('user_delete', { userId: req.user.id, targetType: 'user', targetId: target.id, ip: clientIp(req) });
+
+    // Best-effort and detached: the account is already gone, and a storage
+    // hiccup must not turn a completed deletion into a 500 that invites a retry
+    // against a user that no longer exists.
+    (async () => {
+      await removePrefix(`u/${target.id}/`);
+      await removePrefix(`t/${target.id}/`);
+      for (const f of files) await removeHls(f.id);
+    })().catch((e) => console.warn('[users] object cleanup after delete failed:', e?.message));
+
     res.json({ ok: true });
   }),
 );
