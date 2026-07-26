@@ -35,6 +35,11 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  entriesRef.current = entries;
  const existingRef = useRef(existingFiles);
  existingRef.current = existingFiles;
+ // Guards the offline-outbox flush below. A queued item is only removed from
+ // IndexedDB once its upload RESOLVES, so any flush that starts while another
+ // is still in flight reads the same rows again and uploads them a second time.
+ const flushingRef = useRef(false);
+ const flushedIdsRef = useRef(new Set());
 
  const update = (id, patch) => {
  setEntries((cur) => cur.map((e) => (e.id === id ? { ...e, ...patch } : e)));
@@ -163,6 +168,16 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  useEffect(() => {
  const flush = async () => {
  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+ // Only one flush at a time. This effect re-subscribes whenever `onUploaded`
+ // changes identity, and the only caller passes an inline arrow that also
+ // invalidates the folder queries — so a successful upload re-renders the
+ // parent, which re-runs this effect while the remaining items are still
+ // uploading. Without the guard each pass re-read the queue (rows are only
+ // deleted after their upload resolves) and uploaded the same file again,
+ // creating duplicates that each cost the user quota.
+ if (flushingRef.current) return;
+ flushingRef.current = true;
+ try {
  let items = [];
  try {
  items = await allItems();
@@ -170,14 +185,21 @@ const Uploader = forwardRef(function Uploader({ folderId, onUploaded, existingFi
  return;
  }
  for (const item of items) {
+ // A second safety net across sequential flushes: an item whose upload
+ // already succeeded must never be retried even if its row lingers.
+ if (flushedIdsRef.current.has(item.id)) continue;
  try {
  const result = await chunkedUpload(item.file, { folderId: item.folderId || null });
+ flushedIdsRef.current.add(item.id);
  await removeItem(item.id);
  toast.success(t('uploader.uploaded', { name: item.name }));
  onUploaded?.(result);
  } catch {
  // Still offline / server unreachable — leave it queued for next time.
  }
+ }
+ } finally {
+ flushingRef.current = false;
  }
  };
  flush();
