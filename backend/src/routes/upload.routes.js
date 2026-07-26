@@ -20,7 +20,7 @@ import {
   removeObject,
   uploadPart,
 } from '../services/storage.service.js';
-import { addUsage, assertQuota, subUsage } from '../services/quota.service.js';
+import { addUsage, assertQuota, netCost, subUsage } from '../services/quota.service.js';
 import { generateThumbnail, canThumbnail } from '../services/thumbnail.service.js';
 import { canVideoThumbnail, generateVideoThumbnail } from '../services/video.service.js';
 import { backfillChecksum } from '../services/checksum.service.js';
@@ -45,21 +45,6 @@ const PART_SIZE_SLACK = 1024n;
 // can never finish, so its parts sit in MinIO until the session is aborted.
 // Reject it up front, where it costs nothing.
 const MAX_PART_NUMBER = 10000;
-
-/**
- * Bytes a session will actually add to the owner's usage.
- *
- * A replace deletes the old file and refunds its bytes before charging for the
- * new one, so only the difference is ever owed. Charging the gross size instead
- * refuses a same-size replace for anyone near their limit — and, once the part
- * route also checks quota, does so halfway through the transfer. Floored at
- * zero because assertQuota takes a non-negative addition (a shrinking replace
- * frees space rather than reserving any).
- */
-function netCost(uploadBytes, refundBytes) {
-  const net = BigInt(uploadBytes) - BigInt(refundBytes);
-  return net > 0n ? net : 0n;
-}
 
 /**
  * The bytes a replace will refund at complete(), or 0n for a plain upload.

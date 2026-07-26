@@ -18,6 +18,24 @@ export async function assertQuota(userId, additionalBytes) {
   }
 }
 
+/**
+ * Bytes an overwrite will actually add to the owner's usage.
+ *
+ * An overwrite refunds the old bytes and charges for the new ones, so only the
+ * difference is ever owed — charging the gross size refuses a same-size
+ * overwrite for anyone near their limit. Floored at zero because assertQuota
+ * takes a NON-NEGATIVE addition: a shrinking overwrite frees space rather than
+ * reserving any, and feeding the raw negative delta in would make the check
+ * mean something different here than at every other call site.
+ *
+ * Both operands go through BigInt — `size - Number(existing.size)` loses
+ * precision past 2^53 and is exactly the conversion the byte-total rule bans.
+ */
+export function netCost(uploadBytes, refundBytes) {
+  const net = BigInt(uploadBytes) - BigInt(refundBytes);
+  return net > 0n ? net : 0n;
+}
+
 export async function addUsage(userId, delta) {
   await prisma.user.update({
     where: { id: userId },

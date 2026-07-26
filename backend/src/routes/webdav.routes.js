@@ -11,7 +11,7 @@ import {
   objectKeyFor,
   removeObject,
 } from '../services/storage.service.js';
-import { assertQuota, addUsage, subUsage } from '../services/quota.service.js';
+import { assertQuota, addUsage, netCost, subUsage } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
 import { prisma } from '../config/prisma.js';
 
@@ -173,10 +173,20 @@ router.put('*', async (req, res) => {
   const size = body.length;
   const existing = await prisma.file.findFirst({
     where: { ownerId: owner, folderId: parent?.id ?? null, name, trashedAt: null },
+    include: { versions: { select: { size: true, objectKey: true, version: true } } },
   });
+
+  // What the overwrite refunds is the sum of the file's versions, not File.size
+  // (the current version alone) — see the refund below for why. The quota check
+  // has to use that same figure, or it disagrees with what is actually written:
+  // checking `size - existing.size` while charging `size` minus the version sum
+  // is two different formulas for one operation, which is how a near-quota user
+  // gets a 507 on an overwrite that plainly fits.
+  const refundBytes = existing
+    ? existing.versions.reduce((n, v) => n + BigInt(v.size), 0n)
+    : 0n;
   try {
-    if (existing) await assertQuota(owner, size - Number(existing.size));
-    else await assertQuota(owner, size);
+    await assertQuota(owner, netCost(size, refundBytes));
   } catch {
     return res.status(507).end('Quota exceeded');
   }
@@ -187,14 +197,23 @@ router.put('*', async (req, res) => {
   const checksum = sha256Buffer(body);
 
   if (existing) {
-    const oldKey = existing.objectKey;
-    // Overwrite in place, and move the CURRENT FileVersion onto the new object
-    // in the same transaction. A WebDAV PUT is an overwrite, not a new revision
-    // — the old object is deleted below, so leaving the version row pointing at
-    // it would strand a row whose objectKey 404s and whose size no longer
-    // matches the bytes. Every hard-delete path (trash, the retention sweep,
-    // replace-on-duplicate) refunds the sum of versions[].size, so a stale
-    // version size silently corrupts the owner's usage counter on delete.
+    // A WebDAV PUT is an overwrite, not a new revision: afterwards the file must
+    // occupy exactly `size` bytes. Collapse the history to the single new
+    // object — keep the current version row (pointed at the new object) and drop
+    // any older ones, whose objects are deleted below.
+    //
+    // Rewriting only the current version left the older rows alive pointing at
+    // objects this route never removed, so a file with history silently kept
+    // charging for bytes that no longer had a live object. Worse, every
+    // hard-delete path (trash, the retention sweep, replace-on-duplicate)
+    // refunds the SUM of versions[].size, so those stale rows would later refund
+    // bytes that were never re-charged — drift in the opposite direction, and
+    // unreconcilable once the rows vanish with the cascade.
+    const staleKeys = existing.versions
+      .filter((v) => v.version !== existing.currentVersion)
+      .map((v) => v.objectKey);
+    staleKeys.push(existing.objectKey);
+
     await prisma.$transaction([
       prisma.file.update({
         where: { id: existing.id },
@@ -204,10 +223,15 @@ router.put('*', async (req, res) => {
         where: { fileId: existing.id, version: existing.currentVersion },
         data: { objectKey: key, size: BigInt(size), checksum },
       }),
+      prisma.fileVersion.deleteMany({
+        where: { fileId: existing.id, version: { not: existing.currentVersion } },
+      }),
     ]);
     await addUsage(owner, size);
-    await subUsage(owner, existing.size);
-    removeObject(oldKey).catch(() => {});
+    if (refundBytes > 0n) await subUsage(owner, refundBytes);
+    // The new object shares no key with the old ones (objectKeyFor is unique per
+    // call), so removing them can't touch what was just written.
+    for (const k of new Set(staleKeys)) removeObject(k).catch(() => {});
     return res.status(204).end();
   }
 
