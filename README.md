@@ -31,7 +31,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Trash bin (soft delete + restore + empty + hard delete) with **auto-clean** — items left in trash past a retention window are purged automatically (quota refunded). Both the sweep and "empty trash" **never destroy a folder you restored out of a still-trashed parent**, and a file's quota refund always covers *every* version it accumulated
 - Bulk operations: trash, move, **bulk rename**, **download as ZIP**
 - List view + image **grid view** (with auto-suggestion when ≥ 50% of files are images)
-- **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and the next page auto-loads on scroll (IntersectionObserver sentinel, with a "Load more" fallback), so a folder with thousands of files stays responsive
+- **Scales to huge folders** — files are cursor-paginated (200/page, server-side sort) and the next page auto-loads on scroll (IntersectionObserver sentinel, with a "Load more" fallback), so a folder with thousands of files stays responsive. Listings also stay lean: the search-only columns (a file's full extracted OCR/transcript text and its embedding vector) are stripped from every list response, so a page of files doesn't ship megabytes the UI never renders
 - Recent (recently accessed) and Starred views; **storage analytics** + **duplicate finder**
 
 ### Search & AI (optional, best-effort)
@@ -70,6 +70,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - SSRF guard on upload-from-URL (DNS-resolution check, **re-validated on every redirect hop**)
 - **Content-Security-Policy** enabled (helmet); password-protected shares don't reveal their contents until unlocked
 - **Revocable sessions enforced on WebSockets too** — every socket (`/ws`, `/yjs`, `/gws`) validates the session row and rejects purpose-scoped tokens, so "log out everywhere" also cuts realtime
+- **Only a real session token authenticates a request** — the short-lived tokens issued mid-2FA and for video playback are signed with the same key, so the REST middleware rejects anything carrying a purpose claim rather than relying on those tokens happening to omit a session id; the check runs before any database lookup, so an unusable token costs nothing
 - **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
 - **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
 - **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
@@ -79,6 +80,9 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 ### Data integrity
 - **An interrupted upload is refused, never half-stored** — completing a chunked upload requires every part to be present and the bytes to actually reach the declared size, so a missing chunk fails loudly instead of assembling a file that looks fine but won't open
 - **Parts can't be lost to a retry** — the part list is written with a compare-and-set, so overlapping or retried chunk uploads can't drop each other's entries
+- **Empty files upload like any other** — object storage can't hold a zero-byte *part*, so a 0-byte file is sent as no parts at all and the empty object is written directly; every file goes through the chunked path, so treating "no parts" as an error made empty files impossible to upload rather than merely unusual
+- **A new version updates the file's fingerprint** — uploading a version rewrites the checksum on both the file and the version row, so the duplicate finder groups by what a file *currently* holds, and the collaborative editor's "unchanged, skip the save" check can't mistake fresh content for content it already saved and drop your next edit
+- **Overwriting a video drops its old renditions** — adaptive-streaming segments are keyed by file id, so an overwrite that left them in place would keep playing the *previous* video under the new file's name; every path that replaces content (new version, replace-on-duplicate, WebDAV overwrite, delete) clears them
 - **Trash auto-clean won't take a file you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 - **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
@@ -377,13 +381,14 @@ exercises the routes against a live database, covering the things that only
 break against real SQL and real cascades: quota bookkeeping (net-cost replace,
 the per-part byte ceiling, the floor-at-zero refund, refunding *every* version),
 chunked-upload completeness (missing parts, short totals, concurrent parts, the
-10000-part cap), comment @mentions, owner-scoped folder grants, trashed-file
-share links, the folder-cascade safety shared by the retention sweep and
-"empty trash", the WebDAV overwrite's version collapse and net-cost quota check,
-owner-scoped collection membership, and the object cleanup a user deletion owes
-before its cascade destroys the only record of what was stored. It is excluded
-from `npm test` by `vitest.config.js`, which is why the unit suite needs no
-database.
+10000-part cap, and the 0-byte file that legitimately has none), comment
+@mentions, owner-scoped folder grants, trashed-file share links, the
+folder-cascade safety shared by the retention sweep and "empty trash", the
+WebDAV overwrite's version collapse and net-cost quota check, owner-scoped
+collection membership, the search-only columns being kept out of every list
+response, and the object cleanup a user deletion owes before its cascade
+destroys the only record of what was stored. It is excluded from `npm test` by
+`vitest.config.js`, which is why the unit suite needs no database.
 
 Six files: `files-access.test.js`, `upload-replace.test.js`, `retention.test.js`,
 `webdav-overwrite.test.js`, `collections.test.js`, `user-delete.test.js`.
