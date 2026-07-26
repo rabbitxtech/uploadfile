@@ -44,19 +44,14 @@ async function issueVerification(user) {
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-// Identifier: either a simple username (letters, digits, dot, underscore,
-// hyphen) or an email. Stored in `User.email` column for backward compat with
-// existing accounts that registered with an email.
-const IDENT_RE = /^[a-zA-Z0-9._-]+$/;
-const identifier = z
-  .string()
-  .trim()
-  .min(3, 'At least 3 characters')
-  .max(255)
-  .refine(
-    (v) => IDENT_RE.test(v) || z.string().email().safeParse(v).success,
-    'Only letters, numbers, dot, underscore, hyphen — or a valid email',
-  );
+// NOTE: the username-or-email `identifier` schema that used to sit here was
+// dead code — nothing in this file referenced it. The routes that take an
+// identifier (login, forgot-password, resend-verification) all validate with a
+// bare non-empty string on purpose: they do an exact `findUnique` on the value
+// and deliberately answer the same way whether or not an account matches, so
+// stricter validation would only leak which shapes are real accounts. The live
+// copy of that rule is in users.routes.js, where admin account CREATION does
+// need it.
 
 // Self-registration requires a real, deliverable email — we send a verification
 // link to it. (Admin-created accounts may still use a plain username.)

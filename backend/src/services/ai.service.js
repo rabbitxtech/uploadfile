@@ -1,6 +1,6 @@
 // K1 (OCR via tesseract) + K4 (semantic embeddings via transformers.js).
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, readdir } from 'node:fs/promises';
 import { createWriteStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

@@ -9,6 +9,7 @@
     "start": "node src/server.js",
     "test": "vitest run",
     "test:watch": "vitest",
+    "lint": "eslint . --max-warnings 0",
     "db:switch": "node scripts/switch-db.js",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
@@ -46,6 +47,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "eslint": "^9.39.5",
+    "globals": "^15.15.0",
     "prisma": "^5.22.0",
     "supertest": "^7.0.0",
     "vitest": "^2.1.8"

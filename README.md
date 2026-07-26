@@ -359,11 +359,15 @@ Interactive API docs (Swagger UI) are served at `/api/docs`.
 
 ```bash
 cd backend  && npm test      # unit + Supertest — no database needed
+cd backend  && npm run lint  # eslint, --max-warnings 0
 cd frontend && npm test      # Vitest + React Testing Library
 cd frontend && npm run lint  # eslint, --max-warnings 0
 ```
 
-CI (`.github/workflows/ci.yml`) runs both suites plus a frontend lint + build.
+Both packages lint as a **hard gate** (`--max-warnings 0`) with a lenient flat
+config that targets real defects rather than style. CI
+(`.github/workflows/ci.yml`) runs backend lint + test, the integration suite
+against a real Postgres, and frontend lint + test + build.
 
 **Integration suite — needs a real PostgreSQL.** `backend/test/integration/**`
 exercises the routes against a live database, covering the things that only

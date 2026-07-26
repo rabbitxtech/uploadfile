@@ -40,7 +40,6 @@ import { fileAccessLevel, canEdit } from '../services/access.service.js';
 import { postProcessMedia } from '../services/media.service.js';
 import { maybeGenerateHls, removeHls } from '../services/hls.service.js';
 import { maybeTranscribe } from '../services/transcribe.service.js';
-import { notify } from '../services/notify.service.js';
 import { emitFileChange } from '../realtime/bus.js';
 import { sha256Buffer, backfillChecksum } from '../services/checksum.service.js';
 import { indexFile } from '../services/ai.service.js';
@@ -49,8 +48,6 @@ import { streamRouter } from './files/stream.routes.js';
 import { searchRouter } from './files/search.routes.js';
 import { commentsRouter } from './files/comments.routes.js';
 import {
-  ciContains,
-  readCookie,
   makeVideoThumb,
   bumpAccessed,
   readableFile,
