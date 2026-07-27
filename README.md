@@ -99,6 +99,8 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **A long upload can't land in a folder that was deleted while it ran** — a chunked upload can take hours, and the destination folder was only checked when it started; trashing that folder mid-upload used to file the finished file live inside a hidden parent, absent from both My Files and the trash while still counted against the quota. The file now lands at the top level, where it's visible and can be moved
 - **Seeing who else is viewing a file requires being able to open it** — the live "who's here" indicator broadcasts each viewer's name and email to everyone in the room, but joining a room was gated on nothing more than being logged in, so anyone holding a file id could collect the identities of people viewing a file they had no access to; joining now goes through the same permission check as opening the file
 - **Deleting a shared file actually cuts off the people you shared it with** — trashing already killed *public links*, and "Shared with me" already stopped listing the item, so deleting something looked like un-sharing it from both ends. The access itself outlived the listing: anyone you'd shared with who still had the id — ids travel in links and pasted URLs — could keep opening the file, downloading its bytes, and getting a direct storage URL for it, and could still read the extracted text of the whole document, while the owner watched it sit in their trash. Grants (to a person *or* a group, on the file or on a folder above it) now stop resolving the moment the item is trashed, and start working again when it's restored. You keep full access to your own trashed files, which is what the Trash screen needs
+- **A file and a folder can't occupy the same name in the same place** — nothing stopped a folder being created over a file (or a file being written over a folder), and a folder always wins when a WebDAV client resolves a path: the file underneath became unreadable *and* undeletable from any mounted drive, while staying live and counted against the quota, and a folder listing showed the one name twice. Every route that can pick a name — creating or renaming a folder, renaming or moving a file, all four upload paths, upload-request links, and the WebDAV mount's `MKCOL`/`PUT`/`MOVE` — now refuses to put the two kinds on one name. A long chunked upload is the one exception: if a folder claims the name while its parts are still uploading, the finished file is filed under a suffixed name rather than being rejected after the bytes are already stored and paid for
+- **Renaming a file onto another file's name is refused** — two files under one name in one folder left a WebDAV client picking between them by row order, with the loser billed but unreachable; the same rule the WebDAV move already followed now covers the web app's rename. Bulk rename and bulk move skip just the clashing items and report how many, so one collision can't lose a 200-file batch. Uploading two files with the same name is still allowed, as it always was — both stay visible in the file list, and the uploader offers to replace instead
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -411,18 +413,20 @@ its folder, the refusal to move a folder under a trashed parent, the
 admin-approval gate on the WebDAV write verbs, the destination folder re-checked
 when a chunked upload completes, the read-access check a presence room owes
 before it broadcasts viewers' names and addresses, and the grant access that has
-to end when a shared file or folder is trashed (while the owner keeps theirs).
-It is excluded from
+to end when a shared file or folder is trashed (while the owner keeps theirs),
+and the one-name-one-resource rule that keeps a file and a folder off the same
+path. It is excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Nineteen files: `files-access.test.js`, `upload-replace.test.js`,
+Twenty files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
 `collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
 `auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
 `trashed-writes.test.js`, `trash-restore.test.js`,
 `file-patch-trashed.test.js`, `share-folder-trashed.test.js`,
 `folder-move-trashed-parent.test.js`, `upload-gates.test.js`,
-`presence-access.test.js`, `trashed-grant-access.test.js`.
+`presence-access.test.js`, `trashed-grant-access.test.js`,
+`name-collision.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \

@@ -11,7 +11,8 @@ import { z } from 'zod';
 import { prisma } from '../config/prisma.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { badRequest, notFound, payloadTooLarge } from '../utils/errors.js';
+import { badRequest, conflict, notFound, payloadTooLarge } from '../utils/errors.js';
+import { findFolderNameClash } from '../utils/namecollision.js';
 import {
   abortMultipart,
   completeMultipart,
@@ -88,6 +89,14 @@ router.post(
         where: { id: data.folderId, ownerId: req.user.id, trashedAt: null },
       });
       if (!f) throw notFound('Folder');
+    }
+
+    // Refuse a name a live FOLDER already holds, before a single byte is sent —
+    // complete() re-checks and falls back to a suffixed name, but that exists for
+    // the folder appearing mid-upload. Catching it here means the client gets a
+    // clear 409 it can act on instead of a silently renamed file.
+    if (await findFolderNameClash(req.user.id, data.folderId ?? null, data.filename)) {
+      throw conflict('A folder with that name already exists here');
     }
 
     // A replace refunds the old file's bytes at complete(), so the session only
@@ -323,6 +332,30 @@ router.post(
       if (!stillThere) targetFolderId = null;
     }
 
+    // A file must not take a live FOLDER's name in its destination: WebDAV
+    // resolves a path segment by trying the folder first, so the upload would be
+    // live and billed but unreadable and undeletable there. Checked at complete()
+    // rather than init() because the destination is only settled here (see the
+    // fallback above), and because a folder of that name can be created while the
+    // parts are still uploading.
+    //
+    // Like the trashed-folder fallback, this must not FAIL the upload — the bytes
+    // are already in MinIO and paid for, and a client cannot retry into a name it
+    // has no way to change. Suffix the name instead, which is visible and fixable.
+    let targetName = s.filename;
+    if (await findFolderNameClash(req.user.id, targetFolderId, targetName)) {
+      const dot = targetName.lastIndexOf('.');
+      const stem = dot > 0 ? targetName.slice(0, dot) : targetName;
+      const ext = dot > 0 ? targetName.slice(dot) : '';
+      // Bounded: a folder could plausibly hold "x (file).txt" too. Give up after
+      // a few tries and keep the id-suffixed form, which cannot collide.
+      targetName = `${stem} (file)${ext}`;
+      for (let n = 2; n <= 5; n += 1) {
+        if (!(await findFolderNameClash(req.user.id, targetFolderId, targetName))) break;
+        targetName = `${stem} (file ${n})${ext}`;
+      }
+    }
+
     // Final quota check using the actual bytes, net of what a replace refunds.
     const refundBytes = await refundForSession(s);
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
@@ -376,7 +409,7 @@ router.post(
 
     const file = await prisma.file.create({
       data: {
-        name: s.filename,
+        name: targetName,
         originalName: s.filename,
         mimeType: s.mimeType,
         size: BigInt(total),

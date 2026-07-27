@@ -9,7 +9,8 @@ import { prisma } from '../config/prisma.js';
 import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { badRequest, forbidden, notFound } from '../utils/errors.js';
+import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
+import { findFolderNameClash } from '../utils/namecollision.js';
 import { getObjectStream, putObjectStream, objectKeyFor } from '../services/storage.service.js';
 import { assertQuota, addUsage } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
@@ -300,6 +301,15 @@ router.post(
       where: { id: share.folderId, trashedAt: null },
     });
     if (!folder) throw notFound('Folder');
+
+    // A dropped file must not take a live SUBFOLDER's name: WebDAV resolves a
+    // path segment by trying the folder first, so the upload would be live and
+    // billed against the link owner while being unreadable and undeletable there.
+    // The link owner is not present to resolve it, and an anonymous uploader has
+    // no way to know the folder exists, so refuse rather than rename.
+    if (await findFolderNameClash(share.ownerId, folder.id, req.file.originalname)) {
+      throw conflict('A folder with that name already exists here');
+    }
 
     await assertQuota(share.ownerId, req.file.size);
 

@@ -19,7 +19,8 @@ import { prisma } from '../config/prisma.js';
 import { env } from '../config/env.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
-import { badRequest, notFound, forbidden, HttpError } from '../utils/errors.js';
+import { badRequest, conflict, notFound, forbidden, HttpError } from '../utils/errors.js';
+import { findFileNameClash, findFolderNameClash } from '../utils/namecollision.js';
 import { makeThrottle } from '../utils/throttle.js';
 import {
   getObjectStream,
@@ -64,6 +65,27 @@ import {
 
 const router = Router();
 
+/**
+ * Refuse an incoming file whose name is already a live FOLDER in the same place.
+ *
+ * Note this deliberately does NOT refuse a file that duplicates another FILE's
+ * name: uploading two files called "report.pdf" into one folder is long-standing
+ * product behaviour (the Uploader detects it client-side and offers a replace,
+ * and keeping both is a legitimate choice), and both rows stay visible in the
+ * REST listing, so nothing is hidden.
+ *
+ * A file taking a FOLDER's name is a different thing entirely. WebDAV resolves a
+ * path segment by trying the folder first, so the folder shadows the file for
+ * PROPFIND, GET and DELETE — the upload is live and billed against the quota but
+ * cannot be read or removed there, which is the same unreachable-row state the
+ * trashed-parent gates and the restore-ancestor walk exist to prevent.
+ */
+async function assertFileNameFree(ownerId, folderId, name) {
+  if (await findFolderNameClash(ownerId, folderId ?? null, name)) {
+    throw conflict('A folder with that name already exists here');
+  }
+}
+
 // Stream + HLS live in ./files/stream.routes.js and MUST stay mounted before
 // requireAuth: they authenticate with the stream_tkn HttpOnly cookie because a
 // browser cannot set an Authorization header on <video src>.
@@ -87,6 +109,7 @@ router.post(
       });
       if (!f) throw notFound('Folder');
     }
+    await assertFileNameFree(req.user.id, folderId, req.file.originalname);
     await assertQuota(req.user.id, req.file.size);
 
     const ext = req.file.originalname.includes('.') ? req.file.originalname.split('.').pop() : '';
@@ -386,6 +409,7 @@ router.post(
       .split(';')[0]
       .trim();
     const name = filenameFromUrl(url, contentType);
+    await assertFileNameFree(req.user.id, folderId || null, name);
     const ext = name.includes('.') ? name.split('.').pop() : '';
     const key = objectKeyFor(req.user.id, ext);
     await putObjectStream(key, buffer, total, contentType);
@@ -481,6 +505,16 @@ router.post(
     let committed = false;
     try {
       const total = dl.size;
+      // The name only exists once yt-dlp has finished, so this check lands here
+      // rather than up front; headers are already sent, so it is reported as an
+      // error EVENT rather than thrown. Same rule as every other upload path: a
+      // file must not take a live folder's name, or WebDAV shadows it.
+      try {
+        await assertFileNameFree(req.user.id, folderId || null, dl.name);
+      } catch (e) {
+        send({ type: 'error', error: e?.message || 'A folder with that name already exists here' });
+        return res.end();
+      }
       try {
         await assertQuota(req.user.id, total); // 413 if the video exceeds quota
       } catch (e) {
@@ -788,6 +822,24 @@ router.patch(
       if (!f) throw notFound('Folder');
     }
 
+    // One name, one resource per (owner, folder). WebDAV resolves a path segment
+    // with findFirst, so two live files under one name make row order decide
+    // which one a client reads, overwrites or deletes — and the other stays
+    // billed while being unreachable over WebDAV entirely. A file that takes a
+    // sibling FOLDER's name is worse: PROPFIND tries the folder first and
+    // answers <D:collection/>, and DELETE takes the folder branch, so the file
+    // becomes both unreadable and undeletable there. The WebDAV MOVE already
+    // refuses both (RFC 4918 replace-or-412); this is the REST way in, and it is
+    // the one the rename UI actually drives.
+    const targetFolderId = data.folderId !== undefined ? data.folderId ?? null : file.folderId;
+    const targetName = data.name ?? file.name;
+    if (targetName !== file.name || targetFolderId !== file.folderId) {
+      const fileClash = await findFileNameClash(file.ownerId, targetFolderId, targetName, file.id);
+      if (fileClash) throw conflict('A file with that name already exists here');
+      const folderClash = await findFolderNameClash(file.ownerId, targetFolderId, targetName);
+      if (folderClash) throw conflict('A folder with that name already exists here');
+    }
+
     let tagOps = undefined;
     if (data.tags) {
       const upserts = await Promise.all(
@@ -1028,16 +1080,40 @@ router.post(
           .max(1000),
       })
       .parse(req.body);
+    // The same one-name-one-resource rule PATCH /:id enforces. This route is the
+    // likeliest way to break it: the client generates the names from a pattern,
+    // and a pattern that collapses two files onto one name ("photo (1).jpg" and
+    // "photo (2).jpg" → "photo.jpg") produces exactly the duplicate that makes
+    // WebDAV's findFirst resolution pick a row by chance, leaving the other live,
+    // billed and unreachable. Colliding entries are SKIPPED rather than failing
+    // the batch — the route already reports a `count` that can be lower than what
+    // was asked for (unowned/trashed ids drop out the same way), and a bulk
+    // rename of 200 files should not be lost to one clash.
     let count = 0;
+    let skipped = 0;
     for (const r of renames) {
-      const res2 = await prisma.file.updateMany({
+      const file = await prisma.file.findFirst({
         where: { id: r.id, ...ownerScope(req), trashedAt: null },
+        select: { id: true, ownerId: true, folderId: true, name: true },
+      });
+      if (!file) continue;
+      if (r.name !== file.name) {
+        const clash =
+          (await findFileNameClash(file.ownerId, file.folderId, r.name, file.id)) ||
+          (await findFolderNameClash(file.ownerId, file.folderId, r.name));
+        if (clash) {
+          skipped += 1;
+          continue;
+        }
+      }
+      const res2 = await prisma.file.updateMany({
+        where: { id: file.id, trashedAt: null },
         data: { name: r.name },
       });
       count += res2.count;
     }
     if (count) emitFileChange(req.user.id);
-    res.json({ count });
+    res.json({ count, skipped });
   }),
 );
 
@@ -1061,9 +1137,9 @@ router.post(
     // the user never put it in when they later restored it.
     const files = await prisma.file.findMany({
       where: { id: { in: ids }, ...ownerScope(req), trashedAt: null },
-      select: { id: true, ownerId: true, folderId: true },
+      select: { id: true, ownerId: true, folderId: true, name: true },
     });
-    if (files.length === 0) return res.json({ count: 0 });
+    if (files.length === 0) return res.json({ count: 0, skipped: 0 });
 
     if (folderId) {
       const owners = [...new Set(files.map((f) => f.ownerId))];
@@ -1077,18 +1153,44 @@ router.post(
       if (owners.length > 1 || owners[0] !== dest.ownerId) throw notFound('Folder');
     }
 
+    // Moving into a folder can collide the same way a rename does — with a file
+    // already sitting there under that name, or with a subfolder of that name.
+    // A move that lands a second live row under one name leaves whichever row
+    // WebDAV's findFirst does not pick unreachable and still billed, so drop the
+    // colliding items and report them, exactly as bulk/rename does. Names moving
+    // together in one batch are tracked in `taken` as they are committed, so two
+    // same-named files from different folders can't both land in the destination.
+    const moving = [];
+    const taken = new Set();
+    let skipped = 0;
+    for (const f of files) {
+      if (f.folderId === (folderId ?? null)) continue; // already there: no-op, no clash
+      const key = `${f.ownerId}::${f.name}`;
+      const clash =
+        taken.has(key) ||
+        (await findFileNameClash(f.ownerId, folderId ?? null, f.name, f.id)) ||
+        (await findFolderNameClash(f.ownerId, folderId ?? null, f.name));
+      if (clash) {
+        skipped += 1;
+        continue;
+      }
+      taken.add(key);
+      moving.push(f);
+    }
+    if (moving.length === 0) return res.json({ count: 0, skipped });
+
     const r = await prisma.file.updateMany({
-      where: { id: { in: files.map((f) => f.id) } },
+      where: { id: { in: moving.map((f) => f.id) } },
       data: { folderId },
     });
     // Refresh both the source folders and the destination for every viewer.
-    for (const owner of new Set(files.map((f) => f.ownerId))) {
-      for (const src of new Set(files.filter((f) => f.ownerId === owner).map((f) => f.folderId))) {
+    for (const owner of new Set(moving.map((f) => f.ownerId))) {
+      for (const src of new Set(moving.filter((f) => f.ownerId === owner).map((f) => f.folderId))) {
         emitFileChange(owner, src);
       }
       emitFileChange(owner, folderId);
     }
-    res.json({ count: r.count });
+    res.json({ count: r.count, skipped });
   }),
 );
 

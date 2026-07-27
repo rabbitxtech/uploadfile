@@ -5,6 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { folderAccessLevel } from '../services/access.service.js';
+import { findFileNameClash } from '../utils/namecollision.js';
 import { stripIndexFieldsAll } from './files/_shared.js';
 import {
   parseListQuery,
@@ -45,6 +46,18 @@ function joinPath(parentPath, name) {
  * in that did not. Uniqueness is enforced here rather than by a DB constraint
  * because trashed folders keep their path and must not block a live re-create.
  */
+/**
+ * Refuse a folder name already held by a live FILE in the same parent.
+ *
+ * `assertNoSiblingCollision` only ever compared folders to folders, so nothing
+ * stopped a folder and a file sharing one name — see utils/namecollision.js for
+ * why every layer that resolves a name back to a row breaks when that happens.
+ */
+async function assertNoFileNameCollision(ownerId, parentId, name) {
+  const clash = await findFileNameClash(ownerId, parentId, name);
+  if (clash) throw conflict('A file with that name already exists here');
+}
+
 async function assertNoSiblingCollision(ownerId, path, excludeId = null) {
   const clash = await prisma.folder.findFirst({
     where: {
@@ -209,6 +222,14 @@ router.post(
 
     const path = joinPath(parent?.path ?? '/', data.name);
     await assertNoSiblingCollision(req.user.id, path);
+    // A folder must not take the name of a live FILE sitting beside it either.
+    // WebDAV resolves a path segment by trying findFolder() first, so a folder
+    // created over a file's name shadows it outright: PROPFIND answers
+    // <D:collection/> and DELETE takes the folder branch, leaving the file
+    // unreadable and undeletable there while it stays live and billed — the same
+    // "live, billed, reachable from neither" state the trashed-parent gates and
+    // the restore-ancestor walk exist to prevent.
+    await assertNoFileNameCollision(req.user.id, parent?.id ?? null, data.name);
 
     const folder = await prisma.folder.create({
       data: {
@@ -272,6 +293,13 @@ router.patch(
     // move that doesn't change the path — from colliding with itself.
     if (newPath !== cur.path) {
       await assertNoSiblingCollision(scopeOwner, newPath, cur.id);
+    }
+    // ...and the same file-vs-folder rule POST / applies, against the folder's
+    // destination parent. A rename or a drag-and-drop move is the other way to
+    // land a folder on a live file's name.
+    const newParentId = data.parentId !== undefined ? data.parentId ?? null : cur.parentId;
+    if (newName !== cur.name || newParentId !== cur.parentId) {
+      await assertNoFileNameCollision(scopeOwner, newParentId, newName);
     }
 
     const updated = await prisma.$transaction(async (tx) => {

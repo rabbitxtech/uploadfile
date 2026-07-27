@@ -16,6 +16,7 @@ import { sha256Buffer } from '../services/checksum.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { prisma } from '../config/prisma.js';
 import { findUserByCredential } from '../utils/credential.js';
+import { findFileNameClash, findFolderNameClash } from '../utils/namecollision.js';
 
 const router = Router();
 const BUCKET = process.env.MINIO_BUCKET || 'uploads';
@@ -205,6 +206,18 @@ router.put('*', async (req, res) => {
   const parent = await findFolder(owner, parentPath);
   if (parentPath !== '/' && !parent) return res.status(409).end('Parent collection missing');
 
+  // A PUT onto a path a FOLDER already occupies used to succeed: it created a
+  // File row, charged the quota and returned 201, but the client could never
+  // read it back — PROPFIND and GET both resolve the folder first, so the bytes
+  // it just uploaded were live, billed and invisible. The root listing showed
+  // the name twice (`/webdav/docs/` and `/webdav/docs`), and a second PUT to the
+  // same path did not even find the row to overwrite, so every write leaked
+  // another charged object. 409 is the RFC 4918 answer for a path whose
+  // namespace cannot accept this resource.
+  if (await findFolderNameClash(owner, parent?.id ?? null, name)) {
+    return res.status(409).end('A collection already exists at that path');
+  }
+
   const body = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
   const size = body.length;
   const existing = await prisma.file.findFirst({
@@ -313,6 +326,14 @@ router.all('*', async (req, res, next) => {
   if (parentPath !== '/' && !parent) return res.status(409).end();
   const dupe = await findFolder(owner, p);
   if (dupe) return res.status(405).end('Already exists');
+  // A folder must not take a live FILE's name either. findFolder() is tried
+  // before findFile() by PROPFIND and DELETE, so a folder created over a file
+  // shadows it: the path reports <D:collection/>, DELETE trashes the folder and
+  // leaves the file live, billed and unreachable over WebDAV entirely. 405 is
+  // what this route already returns for "a resource is in the way".
+  if (await findFileNameClash(owner, parent?.id ?? null, name)) {
+    return res.status(405).end('A file with that name already exists here');
+  }
   await prisma.folder.create({
     data: { name, parentId: parent?.id ?? null, ownerId: owner, path: p },
   });
@@ -386,6 +407,11 @@ router.all('*', async (req, res, next) => {
         select: { id: true },
       });
       if (clash) return res.status(412).end('A folder with that name already exists here');
+      // ...and not onto a live FILE's name: the folder would shadow it for
+      // PROPFIND/GET/DELETE, leaving it live, billed and unreachable.
+      if (await findFileNameClash(owner, newParent?.id ?? null, newName)) {
+        return res.status(412).end('A file with that name already exists here');
+      }
     }
     const oldPath = folder.path;
     const descendants = await prisma.folder.findMany({
@@ -409,6 +435,14 @@ router.all('*', async (req, res, next) => {
 
   const file = await findFile(owner, from);
   if (!file) return res.status(404).end();
+  // A file must not move onto a live FOLDER's name. Overwrite semantics do not
+  // apply across resource kinds: RFC 4918 has the destination's namespace refuse
+  // it, and replacing a collection with a file here would mean trashing a whole
+  // subtree behind a rename. Left unchecked the file simply disappeared — the
+  // folder shadows it for every WebDAV verb while it stays live and billed.
+  if (await findFolderNameClash(owner, newParent?.id ?? null, newName)) {
+    return res.status(412).end('A collection already exists at that path');
+  }
   // Moving onto an existing name used to just land a SECOND live file with the
   // same name in the destination folder. findFile()/the PUT overwrite both
   // resolve a name with findFirst, so from then on which of the two a client

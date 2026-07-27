@@ -51,7 +51,12 @@ export default function BulkRenameModal({ files, onClose, onDone }) {
     setBusy(true);
     try {
       const r = await FileApi.bulkRename(changed.map(({ id, name }) => ({ id, name })));
-      toast.success(`Renamed ${r.count} file${r.count === 1 ? '' : 's'}`);
+      // The server skips a rename whose target name is already taken here (by
+      // another file or by a folder) rather than failing the whole batch — say so,
+      // or those files look like they silently refused to rename.
+      const msg = `Renamed ${r.count} file${r.count === 1 ? '' : 's'}`;
+      if (r.skipped) toast.error(`${msg} — ${r.skipped} skipped: that name is already taken here`);
+      else toast.success(msg);
       onDone?.();
       onClose();
     } catch (e) {
