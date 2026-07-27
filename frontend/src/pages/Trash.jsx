@@ -65,13 +65,18 @@ export default function Trash() {
  }
  };
 
- const restoreFile = async (id) => {
- await TrashApi.restore({ fileIds: [id] });
+ // The server holds an item back when its name is already taken by a live file
+ // or folder (restoring onto it would leave two rows answering to one name).
+ // Say so — otherwise Restore looks like it simply did nothing.
+ const reportRestore = (res) => {
+ if (res?.skipped) toast.error(t('trash.restoreNameTaken'));
  refresh();
  };
+ const restoreFile = async (id) => {
+ reportRestore(await TrashApi.restore({ fileIds: [id] }));
+ };
  const restoreFolder = async (id) => {
- await TrashApi.restore({ folderIds: [id] });
- refresh();
+ reportRestore(await TrashApi.restore({ folderIds: [id] }));
  };
  const deleteForever = async (id) => {
  const ok = await confirmDialog({

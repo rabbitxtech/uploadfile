@@ -139,20 +139,58 @@ router.post(
   }),
 );
 
+/**
+ * CLAIM a single-use `Token` — atomically, before doing any work with it.
+ *
+ * `usedAt` is the whole of what makes a reset or verification link single-use,
+ * and both routes used to read the row, check the flag, and only then write it.
+ * That is a read-modify-write on exactly the field whose job is to make the
+ * operation happen once, and on the reset path the bcrypt hash of the new
+ * password sits inside the window, which makes it comfortably wide.
+ *
+ * Measured against a real PostgreSQL: five concurrent resets on ONE token all
+ * returned 200, and the LAST writer decided the account's final password while
+ * the other four were each told their reset had succeeded. Concurrent verify
+ * calls likewise minted a session apiece from a single emailed link.
+ *
+ * The claim is one conditional `updateMany` — the database serialises it per
+ * row, so exactly one caller sees `count === 1` and every loser gets the same
+ * "invalid or expired" answer a genuinely spent link gives. `type` is part of
+ * the condition because reset and verify share this table and are discriminated
+ * only by that column, and `expiresAt` is checked in the same statement so a
+ * token cannot expire between the check and the claim.
+ *
+ * Same compare-and-set the rest of this codebase already relies on for
+ * `UploadSession.parts`, `User.recoveryCodes`, `reserveQuota` and
+ * `upload/complete`, for the same reason.
+ *
+ * Returns the claimed row, or null if another caller got there first.
+ */
+async function claimToken(rawToken, type) {
+  const hash = sha256(rawToken);
+  const rec = await prisma.token.findUnique({ where: { hash } });
+  if (!rec || rec.type !== type) return null;
+
+  const claimed = await prisma.token.updateMany({
+    where: { id: rec.id, type, usedAt: null, expiresAt: { gt: new Date() } },
+    data: { usedAt: new Date() },
+  });
+  return claimed.count === 1 ? rec : null;
+}
+
 // Confirm an email with the token from the verification link. On success the
 // account is activated and the user is signed in (token returned).
 router.post(
   '/verify-email',
   asyncHandler(async (req, res) => {
     const { token } = z.object({ token: z.string().min(10) }).parse(req.body);
-    const rec = await prisma.token.findUnique({ where: { hash: sha256(token) } });
-    if (!rec || rec.type !== 'verify' || rec.usedAt || rec.expiresAt < new Date()) {
-      throw badRequest('Invalid or expired verification link');
-    }
-    const [user] = await prisma.$transaction([
-      prisma.user.update({ where: { id: rec.userId }, data: { emailVerified: true } }),
-      prisma.token.update({ where: { id: rec.id }, data: { usedAt: new Date() } }),
-    ]);
+    // Claim first: a link consumed twice hands out two real sessions.
+    const rec = await claimToken(token, 'verify');
+    if (!rec) throw badRequest('Invalid or expired verification link');
+    const user = await prisma.user.update({
+      where: { id: rec.userId },
+      data: { emailVerified: true },
+    });
     audit('email_verified', { userId: user.id, ip: clientIp(req) });
     notify(user.id, {
       type: 'welcome',
@@ -334,14 +372,16 @@ router.post(
     const { token, password } = z
       .object({ token: z.string().min(10), password: z.string().min(6) })
       .parse(req.body);
-    const rec = await prisma.token.findUnique({ where: { hash: sha256(token) } });
-    if (!rec || rec.type !== 'reset' || rec.usedAt || rec.expiresAt < new Date()) {
-      throw badRequest('Invalid or expired reset link');
-    }
-    await prisma.$transaction([
-      prisma.user.update({ where: { id: rec.userId }, data: { password: await bcrypt.hash(password, 10) } }),
-      prisma.token.update({ where: { id: rec.id }, data: { usedAt: new Date() } }),
-    ]);
+    // Claim the token BEFORE hashing the new password: the hash is the slowest
+    // step in this route, and leaving it inside the check-then-consume window is
+    // what let five concurrent resets all succeed, with the last one to commit
+    // silently deciding the account's password.
+    const rec = await claimToken(token, 'reset');
+    if (!rec) throw badRequest('Invalid or expired reset link');
+    await prisma.user.update({
+      where: { id: rec.userId },
+      data: { password: await bcrypt.hash(password, 10) },
+    });
     // Security: a reset means the account may have been compromised — drop every
     // existing login so an attacker's stolen token stops working.
     //

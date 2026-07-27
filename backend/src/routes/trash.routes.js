@@ -9,6 +9,7 @@ import { removeObject } from '../services/storage.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { subUsage } from '../services/quota.service.js';
 import { deletableFolderIds } from '../utils/foldercascade.js';
+import { findFileNameClash, findFolderNameClash } from '../utils/namecollision.js';
 import { emitFileChange } from '../realtime/bus.js';
 
 const router = Router();
@@ -60,13 +61,13 @@ router.post(
       data.fileIds?.length
         ? prisma.file.findMany({
             where: { id: { in: data.fileIds }, ...ownerScope(req) },
-            select: { id: true, ownerId: true, folderId: true },
+            select: { id: true, ownerId: true, folderId: true, name: true },
           })
         : Promise.resolve([]),
       data.folderIds?.length
         ? prisma.folder.findMany({
             where: { id: { in: data.folderIds }, ...ownerScope(req) },
-            select: { id: true, ownerId: true, parentId: true },
+            select: { id: true, ownerId: true, parentId: true, name: true, path: true },
           })
         : Promise.resolve([]),
     ]);
@@ -90,40 +91,130 @@ router.post(
     // `Folder.path` is names-only and not namespaced per owner, so a prefix
     // match can cross into a stranger's identically-named tree. Each chain is
     // additionally pinned to its own item's ownerId for the same reason.
-    const ancestorIds = new Set();
-    const seen = new Set();
-    for (const item of [
-      ...targetFiles.map((f) => ({ ownerId: f.ownerId, parentId: f.folderId })),
-      ...targetFolders.map((f) => ({ ownerId: f.ownerId, parentId: f.parentId })),
-    ]) {
-      let cursor = item.parentId;
+    //
+    // The walk is resolved PER ITEM rather than into one shared set, because an
+    // item whose chain cannot be restored (see the collision rule below) must be
+    // held back with it — restoring the row while its ancestor stays trashed is
+    // precisely the unreachable state this walk exists to prevent.
+    const chainCache = new Map();
+    async function trashedAncestors(ownerId, startParentId) {
+      const key = `${ownerId}::${startParentId ?? ''}`;
+      if (chainCache.has(key)) return chainCache.get(key);
+      const chain = [];
+      const seen = new Set();
+      let cursor = startParentId;
       // Bounded by the folder depth; `seen` also stops a cycle from a corrupted
       // parent chain turning this into an infinite loop.
       while (cursor && !seen.has(cursor)) {
         seen.add(cursor);
         const parent = await prisma.folder.findFirst({
-          where: { id: cursor, ownerId: item.ownerId },
-          select: { id: true, parentId: true, trashedAt: true },
+          where: { id: cursor, ownerId },
+          select: { id: true, parentId: true, trashedAt: true, path: true, name: true },
         });
         if (!parent) break;
-        if (parent.trashedAt) ancestorIds.add(parent.id);
+        if (parent.trashedAt) chain.push(parent);
         cursor = parent.parentId;
       }
+      chainCache.set(key, chain);
+      return chain;
+    }
+
+    // One name, one live resource — the rule every OTHER name-choosing path in
+    // this codebase enforces, and the one this route had no check for at all.
+    //
+    // Those checks are scoped to `trashedAt: null` on purpose: a trashed row
+    // keeps its name and must not block re-creating one, since it is on its way
+    // out and invisible to every listing. That carve-out is exactly what makes
+    // the collision reachable here, through ordinary housekeeping rather than an
+    // attack — delete "docs", create a new "docs", restore the old one from the
+    // trash, and two live folders now sit at "/docs".
+    //
+    // That pair is read as a SUBTREE IDENTITY by three separate layers: the
+    // folder soft-delete and the rename both select descendants with
+    // `path startsWith parent + '/'` (so deleting one "/docs" trashes the
+    // OTHER's children and their files, and renaming one rewrites the other's
+    // descendants into a tree whose children no longer match their parent),
+    // `deletableFolderIds` decides what a bulk purge may cascade into, and
+    // `grantCoversFolder` resolves folder shares.
+    //
+    // File-vs-folder is worse than a duplicate: WebDAV's PROPFIND tries
+    // findFolder before findFile and answers <D:collection/>, and DELETE takes
+    // the folder branch, so the file is live, billed, and both unreadable and
+    // undeletable there.
+    //
+    // File-vs-FILE is deliberately allowed: two uploads of "report.pdf" is
+    // long-standing product behaviour (the Uploader offers a replace) and both
+    // rows stay visible in the REST listing, so restore must not invent a
+    // stricter rule than upload has.
+    //
+    // Blocked items are SKIPPED and reported rather than failing the request —
+    // "Restore all" over a full trash must not be lost to one clash, and the
+    // route already returns a `restored` count that can be lower than what was
+    // asked for.
+    let skipped = 0;
+    const ancestorIds = new Set();
+
+    // Would un-trashing this folder land it on a path a live folder already
+    // holds? Used for the folders the user named AND for every ancestor the walk
+    // would resurrect — an ancestor is un-trashed onto a path that may now be
+    // occupied just as readily as the item itself.
+    async function folderPathTaken(ownerId, folder) {
+      const clash = await prisma.folder.findFirst({
+        where: { ownerId, path: folder.path, trashedAt: null, id: { not: folder.id } },
+        select: { id: true },
+      });
+      return !!clash;
+    }
+
+    async function chainIsRestorable(ownerId, chain) {
+      for (const a of chain) {
+        if (await folderPathTaken(ownerId, a)) return false;
+      }
+      return true;
+    }
+
+    const restoreFiles = [];
+    for (const f of targetFiles) {
+      const chain = await trashedAncestors(f.ownerId, f.folderId);
+      // A file may share a name with another FILE, but not with a live FOLDER.
+      const folderClash = await findFolderNameClash(f.ownerId, f.folderId ?? null, f.name);
+      if (folderClash || !(await chainIsRestorable(f.ownerId, chain))) {
+        skipped += 1;
+        continue;
+      }
+      restoreFiles.push(f);
+      for (const a of chain) ancestorIds.add(a.id);
+    }
+
+    const restoreFolders = [];
+    for (const f of targetFolders) {
+      const fileClash = await findFileNameClash(f.ownerId, f.parentId ?? null, f.name);
+      const chain = await trashedAncestors(f.ownerId, f.parentId);
+      if (
+        (await folderPathTaken(f.ownerId, f)) ||
+        fileClash ||
+        !(await chainIsRestorable(f.ownerId, chain))
+      ) {
+        skipped += 1;
+        continue;
+      }
+      restoreFolders.push(f);
+      for (const a of chain) ancestorIds.add(a.id);
     }
 
     const ops = [];
-    if (targetFiles.length) {
+    if (restoreFiles.length) {
       ops.push(
         prisma.file.updateMany({
-          where: { id: { in: targetFiles.map((f) => f.id) } },
+          where: { id: { in: restoreFiles.map((f) => f.id) } },
           data: { trashedAt: null },
         }),
       );
     }
-    if (targetFolders.length) {
+    if (restoreFolders.length) {
       ops.push(
         prisma.folder.updateMany({
-          where: { id: { in: targetFolders.map((f) => f.id) } },
+          where: { id: { in: restoreFolders.map((f) => f.id) } },
           data: { trashedAt: null },
         }),
       );
@@ -144,7 +235,9 @@ router.post(
     if (ancestorIds.size) results.pop();
     const restored = results.reduce((n, r) => n + r.count, 0);
     if (restored) emitFileChange(req.user.id); // Task5 #5
-    res.json({ restored });
+    // `skipped` tells the client the name is already taken, so it can say so
+    // instead of leaving the user staring at an item that stayed in the trash.
+    res.json({ restored, skipped });
   }),
 );
 

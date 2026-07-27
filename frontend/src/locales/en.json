@@ -403,6 +403,7 @@
     "emptyTrashTitle": "Empty trash?",
     "emptyTrashMsg": "All items in trash will be permanently deleted. This cannot be undone.",
     "trashEmptied": "Trash emptied",
+    "restoreNameTaken": "Couldn't restore — something with that name already exists. Rename it, then try again.",
     "isEmpty": "Trash is empty"
   },
   "duplicates": {

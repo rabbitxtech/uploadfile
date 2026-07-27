@@ -403,6 +403,7 @@
     "emptyTrashTitle": "Dọn thùng rác?",
     "emptyTrashMsg": "Tất cả mục trong thùng rác sẽ bị xoá vĩnh viễn. Không thể hoàn tác.",
     "trashEmptied": "Đã dọn thùng rác",
+    "restoreNameTaken": "Không khôi phục được — đã có mục khác trùng tên. Hãy đổi tên mục đó rồi thử lại.",
     "isEmpty": "Thùng rác trống"
   },
   "duplicates": {
