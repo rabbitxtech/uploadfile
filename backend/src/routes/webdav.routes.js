@@ -16,7 +16,7 @@ import { sha256Buffer } from '../services/checksum.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { prisma } from '../config/prisma.js';
 import { findUserByCredential } from '../utils/credential.js';
-import { findFileNameClash, findFolderNameClash } from '../utils/namecollision.js';
+import { findFileNameClash, findFolderNameClash, sanitizeEntryName } from '../utils/namecollision.js';
 
 const router = Router();
 const BUCKET = process.env.MINIO_BUCKET || 'uploads';
@@ -116,6 +116,42 @@ async function findFile(ownerId, path) {
   });
 }
 
+/**
+ * A name this router is about to STORE is one path segment, exactly as it is on
+ * every REST entry point.
+ *
+ * WebDAV was the one writer that never went through `sanitizeEntryName`, and the
+ * reason it is reachable is `davPath()`: it percent-DECODES the request path
+ * *after* Express has already split the URL, so a `%5C` or `%00` never looks
+ * like a separator to the router and arrives intact in `splitParent().name`.
+ * `/webdav/a%5Cb.txt` stored the literal name "a\b.txt", and
+ * `/webdav/%2e%2e%5Cevil.txt` stored "..\evil.txt".
+ *
+ * Backslash is a separator here for the same reason sanitizeEntryName treats it
+ * as one: Windows WebDAV clients and the ZIP spec both read it that way. All
+ * three consumers of a stored name then misread it — `findFile()` splits a
+ * request path on the last separator and so can never resolve the row again
+ * (live, billed, unreadable and undeletable over the very protocol that made
+ * it), `Folder.path` joins names with "/" so a MKCOL'd separator forges a path
+ * into another subtree, and `archive.append(s, { name })` writes it into the ZIP
+ * central directory verbatim as a Zip Slip entry. A NUL is worse than any of
+ * them: it is not valid UTF-8 for PostgreSQL, so it surfaced as a raw 500 out of
+ * whichever query touched the name first.
+ *
+ * `'reject'`, not `'strip'`: a WebDAV path IS the user's instruction about where
+ * the resource goes, so quietly storing a different name would carry out a
+ * different one — the same reasoning that makes the folder create/rename and
+ * `upload/init` reject. 400 is the honest answer, and clients surface it.
+ */
+function davName(res, raw, label) {
+  try {
+    return sanitizeEntryName(raw, { label });
+  } catch {
+    res.status(400).end(`Invalid ${label}: a name must be a single path segment`);
+    return null;
+  }
+}
+
 const xmlEscape = (s) =>
   String(s).replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c]));
 const href = (p) =>
@@ -201,8 +237,11 @@ router.all('*', async (req, res, next) => {
 router.put('*', async (req, res) => {
   const owner = req.davUser.id;
   const p = davPath(req);
-  const { parentPath, name } = splitParent(p);
-  if (!name) return res.status(400).end();
+  const { parentPath, name: rawName } = splitParent(p);
+  if (!rawName) return res.status(400).end();
+  // One segment before anything is stored or charged — see davName.
+  const name = davName(res, rawName, 'filename');
+  if (name === null) return;
   const parent = await findFolder(owner, parentPath);
   if (parentPath !== '/' && !parent) return res.status(409).end('Parent collection missing');
 
@@ -346,8 +385,14 @@ router.all('*', async (req, res, next) => {
   if (req.method !== 'MKCOL') return next();
   const owner = req.davUser.id;
   const p = davPath(req);
-  const { parentPath, name } = splitParent(p);
-  if (!name) return res.status(400).end();
+  const { parentPath, name: rawName } = splitParent(p);
+  if (!rawName) return res.status(400).end();
+  // A folder name carrying a separator forges a `Folder.path` into an unrelated
+  // subtree — the row lands with this parent but a path that an unrelated
+  // delete's `path startsWith` cascade sweeps away, and that restore (which
+  // climbs parentId) cannot put back. See davName.
+  const name = davName(res, rawName, 'folder name');
+  if (name === null) return;
   const parent = await findFolder(owner, parentPath);
   if (parentPath !== '/' && !parent) return res.status(409).end();
   const dupe = await findFolder(owner, p);
@@ -408,9 +453,27 @@ router.all('*', async (req, res, next) => {
     return res.status(400).end();
   }
   if (destPath.length > 1 && destPath.endsWith('/')) destPath = destPath.slice(0, -1);
-  const { parentPath: newParentPath, name: newName } = splitParent(destPath);
+  const { parentPath: newParentPath, name: rawNewName } = splitParent(destPath);
+  if (!rawNewName) return res.status(400).end();
+  // A MOVE is a rename, so it is the other way to write a forged name — and the
+  // folder branch below rebuilds `path` (and every descendant's) from it. See
+  // davName. Checked before the source is even resolved, so a bad destination
+  // costs nothing and changes nothing.
+  const newName = davName(res, rawNewName, 'name');
+  if (newName === null) return;
   const newParent = await findFolder(owner, newParentPath);
   if (newParentPath !== '/' && !newParent) return res.status(409).end();
+
+  // Rebuild the destination path from the resolved parent and the sanitised
+  // name rather than trusting the client's Destination string. `destPath` is
+  // what gets WRITTEN into Folder.path (and prefixed onto every descendant), and
+  // the two must agree: the parent is looked up by `newParentPath`, so composing
+  // the path from that parent's own stored `path` is the only form guaranteed to
+  // match the parentId this row is about to get. A Destination that disagreed
+  // would otherwise leave a folder whose path says it lives somewhere its parent
+  // link does not — the inconsistent-tree state assertNoSiblingCollision exists
+  // to keep out, feeding the same prefix queries.
+  destPath = newParent ? `${newParent.path}/${newName}` : `/${newName}`;
 
   const folder = await findFolder(owner, from);
   if (folder) {

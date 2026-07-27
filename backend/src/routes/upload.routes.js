@@ -267,6 +267,35 @@ router.post(
     if (!s) throw notFound('Upload session');
     if (s.completed) throw badRequest('Already completed');
 
+    // CLAIM the session before doing any of the work, rather than reading the
+    // flag here and setting it at the very end.
+    //
+    // That read-then-write left the whole of complete() — the MinIO assembly,
+    // the quota reservation, the File row — inside the window where a second
+    // request sees `completed: false` and starts the same work. Verified against
+    // a real database: three concurrent completes on ONE session all returned
+    // 201, created THREE File rows from one set of parts, and charged the owner
+    // 3000 bytes for a 1000-byte upload. No attacker is required — the client
+    // retries complete() on a timeout or a dropped connection, which is exactly
+    // when the first call is still running, and every retry mints another
+    // duplicate row and another permanent quota charge.
+    //
+    // `updateMany` gated on `completed: false` compiles to one conditional
+    // UPDATE, which the database serialises per row, so exactly one caller wins.
+    // The losers get the same 400 a genuinely finished session gives them.
+    //
+    // Same compare-and-set this codebase already applies to the other
+    // JSON/flag columns that cannot be updated in place — UploadSession.parts
+    // and User.recoveryCodes — and for the same reason.
+    const claimed = await prisma.uploadSession.updateMany({
+      where: { id: s.id, completed: false },
+      data: { completed: true },
+    });
+    if (claimed.count === 0) throw badRequest('Already completed');
+
+    // From here on the row is already marked completed, so every failure exit
+    // below only needs to abort the multipart upload; `failSession` keeps its
+    // shape (the update is idempotent) so the two cannot drift apart.
     const parts = JSON.parse(s.parts);
     // A 0-byte file legitimately has NO parts: multipart cannot store a
     // zero-byte part, so the client sends none and the empty-body rejection in
@@ -470,10 +499,8 @@ router.post(
       removeHls(s.replaceFileId).catch(() => {}); // drop the replaced file's renditions
     }
 
-    await prisma.uploadSession.update({
-      where: { id: s.id },
-      data: { completed: true },
-    });
+    // The session was already marked completed by the claim at the top of this
+    // route — that is what makes complete() run once. Nothing to set here.
 
     // Checksum (best-effort, async) — streams the assembled object (H2 dedup).
     backfillChecksum(file.id, s.objectKey);

@@ -75,6 +75,8 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
 - **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
 - **The quota holds when uploads arrive at once** — checking the remaining space and then charging for the upload were two separate steps with the whole transfer in between, so simultaneous uploads all measured the same starting balance, all decided they fit, and all committed: ten parallel 200-byte uploads against a 1000-byte limit stored 2000 bytes. This needed no trickery — the uploader sends several files at once, so ordinary use overshot — and an upload-request link reaches the same path with no login at all, meaning a stranger holding the link could push the owner arbitrarily past their limit. Space is now claimed in a single step that only succeeds if it still fits, applied to every way in: the web uploader, large chunked uploads, uploads by URL, video imports, new versions, editor saves, the WebDAV mount and anonymous upload links. A claim that doesn't turn into a stored file is given back
+- **A large upload finishes exactly once** — the step that turns a completed chunked upload into a stored file checked whether the upload was already finished, then did the whole of the work (assembling the parts, charging the quota, creating the file) before marking it done. Anything arriving in that window started the same work over again — and the thing that arrives in that window is the uploader's own retry, sent whenever finishing a big file times out or the connection drops. Measured against a real server: five retries of one upload created **five copies of the file and charged five times the bytes**, and the copies all pointed at the same stored object, so deleting any one of them pulled the content out from under the rest. The upload is now claimed in a single step before any work begins, so one attempt wins and the others are told it's already finished — the file is stored once, billed once, and the retry is harmless
+- **The WebDAV drive can't be used to smuggle a path into a name** — every route in the web app checks that a stored name is a single name rather than a disguised path, but the WebDAV mount checked nothing, and it decodes the request path in a way that hides the disguise: `%5C` (a backslash, which Windows drives and the ZIP format both read as a folder separator) and even a null byte arrived intact. Writing a file called `a\b.txt` produced a row a mounted drive could never open or delete again while it stayed counted against the quota; creating a folder that way forged its position into an unrelated part of the tree, where an unrelated delete would sweep it away and restoring couldn't bring it back; and either one rode into the next ZIP download as an entry that escapes the extraction folder. A null byte was answered with a raw server error. Uploads, folder creation and renames over WebDAV now refuse these with a clear error, exactly as the web app does, while ordinary names keep working
 - **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
 - **A two-factor recovery code is spent exactly once** — the codes are the way back in when an authenticator is lost, and they're the credential most likely to leak in bulk (they're handed over as a printable block that ends up in notes and password managers), so single-use is the whole point of issuing eight of them. Consuming one used to be a read-then-write, which broke in both directions under concurrency: the *same* code presented twice at the same instant was accepted twice — a second-factor bypass — while two *different* codes used at once left one of them still valid after it had already logged someone in. The consume is now a conditional write, so a code is either spent or refused
 - **Collections can't be used to read someone else's files** — a collection is yours, but its contents are a join table, so adding a file checks that *you own it*; you can't name a stranger's file id and have the listing hand back its contents (including extracted OCR text)
@@ -430,11 +432,13 @@ when uploads arrive simultaneously (single-shot, chunked and the anonymous
 upload link), the video-optimise pass that must not drive the usage counter
 negative or leave the version record behind, the API keys a password reset has
 to revoke alongside the login sessions (and the routine password change that
-deliberately keeps them), and the refusal to write a new grant against a trashed
-file or folder. It is excluded from
+deliberately keeps them), the refusal to write a new grant against a trashed
+file or folder, the once-only guarantee a chunked upload's completion owes when
+the client retries it, and the one-path-segment rule applied to the WebDAV
+mount's own write verbs. It is excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Twenty-eight files: `files-access.test.js`, `upload-replace.test.js`,
+Thirty files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `retention-restored-file.test.js`,
 `trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
 `webdav-overwrite.test.js`, `webdav-move.test.js`,
@@ -446,7 +450,8 @@ Twenty-eight files: `files-access.test.js`, `upload-replace.test.js`,
 `presence-access.test.js`, `trashed-grant-access.test.js`,
 `name-collision.test.js`, `name-segment.test.js`,
 `quota-race.test.js`, `optimize-quota.test.js`,
-`credential-reset-apikeys.test.js`, `grant-trashed-target.test.js`.
+`credential-reset-apikeys.test.js`, `grant-trashed-target.test.js`,
+`upload-complete-race.test.js`, `webdav-name-segment.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
