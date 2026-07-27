@@ -10,6 +10,7 @@ import {
   CalendarPlus,
   Pencil,
   QrCode,
+  Upload,
   X,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -224,6 +225,13 @@ export default function Shares() {
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">
  {s.downloads}
  {s.maxDownloads ? ` / ${s.maxDownloads}` : ''}
+ {/* A drop-box link caps how many files it will accept, and until now the
+ owner had no way to see how much of that allowance was used. */}
+ {s.allowUpload && (
+ <span className="ml-2 whitespace-nowrap" title={t('shares.uploadsReceived')}>
+ <Upload className="inline h-3 w-3" /> {s.uploads ?? 0}
+ </span>
+ )}
  </td>
  <td className="px-3 py-2 text-xs text-slate-500 dark:text-slate-400">{s.password ? t('shares.yes') : t('shares.no')}</td>
  <td className="px-3 py-2 text-right">

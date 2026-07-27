@@ -195,6 +195,54 @@ async function authorizeShare(share, providedPassword) {
   }
 }
 
+/**
+ * CLAIM one download against a capped share link, atomically.
+ *
+ * `maxDownloads` is the only thing standing between "a link for one person" and
+ * "a link for everyone it gets forwarded to", and it was enforced as a
+ * check-then-act: `authorizeShare` read `downloads` at the top of the request,
+ * and the increment ran when the response stream ENDED (`stream.on('end')`,
+ * detached and `.catch`-swallowed). The window between the two is the entire
+ * download — seconds for a large file — and every request that arrives inside it
+ * reads the same pre-increment count and is allowed through. Measured against a
+ * real database over the real route: a share capped at **1** served **5 of 5**
+ * concurrent downloads (and the ZIP branch 4 of 4), while the counter recorded
+ * fewer than were served, so the owner's own access log understates it too.
+ *
+ * No attacker is needed for the ordinary case — a browser issuing parallel
+ * requests, or a couple of people opening a forwarded link at once, is enough —
+ * but the link is public and unauthenticated, so a cap of 1 is also trivially
+ * turned into unlimited by anyone holding the token.
+ *
+ * Fixing it inside the two call sites is not possible: the gap IS the two call
+ * sites. So the bound and the increment become ONE conditional statement, which
+ * the database serialises per row — the same compare-and-set this codebase
+ * already uses for `reserveQuota`, the `complete()` session claim,
+ * `UploadSession.parts` and `User.recoveryCodes`.
+ *
+ * Claimed BEFORE a byte is sent, not after the stream ends: a download that the
+ * client aborts halfway still consumed the object, and counting only completed
+ * transfers is what made the counter disagree with reality. An uncapped share
+ * (`maxDownloads: null`) still just increments, since there is nothing to bound.
+ *
+ * Returns nothing; throws the same 403 `authorizeShare` throws for an exhausted
+ * link, so callers keep their existing error handling.
+ */
+async function claimDownload(share) {
+  if (share.maxDownloads == null) {
+    // Uncapped: record it, but never fail the download over a bookkeeping write.
+    await prisma.share
+      .update({ where: { id: share.id }, data: { downloads: { increment: 1 } } })
+      .catch(() => {});
+    return;
+  }
+  const claimed = await prisma.share.updateMany({
+    where: { id: share.id, downloads: { lt: share.maxDownloads } },
+    data: { downloads: { increment: 1 } },
+  });
+  if (claimed.count === 0) throw forbidden('Share download limit reached');
+}
+
 router.post(
   '/public/:token/download',
   asyncHandler(async (req, res) => {
@@ -203,6 +251,11 @@ router.post(
       include: { file: true },
     });
     await authorizeShare(share, req.body?.password);
+    // Claim the download slot BEFORE streaming anything. See claimDownload: the
+    // old increment fired when the stream ended, so every request that started
+    // while an earlier one was still transferring saw the same count and got
+    // through — a cap of 1 served as many downloads as arrived together.
+    await claimDownload(share);
     logShareAccess(share.id, 'download', req); // B7
 
     if (share.fileId && share.file) {
@@ -215,9 +268,7 @@ router.post(
       stream.on('error', (e) => res.destroy(e));
       stream.pipe(res);
       stream.on('end', () => {
-        prisma.share
-          .update({ where: { id: share.id }, data: { downloads: { increment: 1 } } })
-          .catch(() => {});
+        // The download was already claimed above; only the notification is left.
         notify(share.ownerId, {
           type: 'share_download',
           title: `Your shared file was downloaded`,
@@ -250,10 +301,8 @@ router.post(
         archive.append(s, { name: zipEntryName(f.name) });
       }
       await archive.finalize();
-      await prisma.share.update({
-        where: { id: share.id },
-        data: { downloads: { increment: 1 } },
-      });
+      // Claimed before the ZIP started (see claimDownload) — the folder branch
+      // had the same check-then-act hole as the file branch.
       notify(share.ownerId, {
         type: 'share_download',
         title: `Your shared folder was downloaded`,
@@ -294,26 +343,67 @@ router.post(
     if (maxBytes > 0 && req.file.size > maxBytes) {
       throw badRequest(`File too large for this upload link (max ${Math.floor(maxBytes / (1024 * 1024))} MB)`);
     }
+    // CLAIM an upload slot before storing anything, rather than counting rows
+    // now and writing one at the end.
+    //
+    // The cap was a check-then-act with the whole upload inside the window: it
+    // COUNTed `ShareAccess` rows, and the row it counts is written
+    // fire-and-forget AFTER the File row is created. Concurrent uploads all read
+    // the same count and all committed — measured over the real route against a
+    // real database, a link capped at 2 with 1 slot already used accepted **6 of
+    // 6**. This endpoint takes NO authentication, so this cap is the only bound
+    // on how many files a stranger holding the link can push into the owner's
+    // storage; the same reasoning that made `reserveQuota` atomic for the BYTES
+    // applies to the file COUNT.
+    //
+    // A log table cannot be claimed atomically — an insert is not conditional on
+    // how many rows already exist — so the count lives on the Share row and is
+    // taken with one conditional UPDATE the database serialises, exactly like
+    // `claimDownload` above. `Share.uploads` is backfilled from the access log by
+    // its migration, so existing links keep the slots they have already used.
     const maxUploads = env.limits.dropboxMaxUploadsPerShare;
+    let slotClaimed = false;
     if (maxUploads > 0) {
-      const used = await prisma.shareAccess.count({ where: { shareId: share.id, action: 'upload' } });
-      if (used >= maxUploads) throw forbidden('This upload link has reached its file limit');
+      const claimed = await prisma.share.updateMany({
+        where: { id: share.id, uploads: { lt: maxUploads } },
+        data: { uploads: { increment: 1 } },
+      });
+      if (claimed.count === 0) throw forbidden('This upload link has reached its file limit');
+      slotClaimed = true;
     }
+    // Anything that throws from here on must give the slot back, or a refused or
+    // failed upload permanently burns one of the link's uploads.
+    const releaseSlot = async () => {
+      if (!slotClaimed) return;
+      slotClaimed = false;
+      await prisma.share
+        .updateMany({ where: { id: share.id, uploads: { gt: 0 } }, data: { uploads: { decrement: 1 } } })
+        .catch(() => {});
+    };
 
-    const folder = await prisma.folder.findFirst({
-      where: { id: share.folderId, trashedAt: null },
-    });
-    if (!folder) throw notFound('Folder');
+    const folder = await prisma.folder
+      .findFirst({ where: { id: share.folderId, trashedAt: null } })
+      .catch(async (e) => {
+        await releaseSlot();
+        throw e;
+      });
+    if (!folder) {
+      await releaseSlot();
+      throw notFound('Folder');
+    }
 
     // The multipart filename is fully attacker-controlled here — this endpoint
     // takes no authentication at all — so reduce it to one segment before it is
     // stored. A dropped "a/b.txt" would otherwise land a row the link owner
     // cannot resolve over WebDAV, and "../x" would ride into their next ZIP
     // download as a Zip Slip entry. See sanitizeEntryName.
-    const dropName = sanitizeEntryName(req.file.originalname, {
-      label: 'filename',
-      mode: 'strip',
-    });
+    let dropName;
+    try {
+      dropName = sanitizeEntryName(req.file.originalname, { label: 'filename', mode: 'strip' });
+    } catch (e) {
+      await releaseSlot();
+      throw e;
+    }
 
     // A dropped file must not take a live SUBFOLDER's name: WebDAV resolves a
     // path segment by trying the folder first, so the upload would be live and
@@ -321,6 +411,7 @@ router.post(
     // The link owner is not present to resolve it, and an anonymous uploader has
     // no way to know the folder exists, so refuse rather than rename.
     if (await findFolderNameClash(share.ownerId, folder.id, dropName)) {
+      await releaseSlot();
       throw conflict('A folder with that name already exists here');
     }
 
@@ -329,7 +420,12 @@ router.post(
     // link fire concurrent uploads that all read the same pre-upload balance and
     // all committed — pushing the link owner arbitrarily past the quota that is
     // supposed to bound their storage. See reserveQuota.
-    await reserveQuota(share.ownerId, req.file.size);
+    try {
+      await reserveQuota(share.ownerId, req.file.size);
+    } catch (e) {
+      await releaseSlot(); // over quota: the slot was never used
+      throw e;
+    }
 
     const ext = dropName.includes('.') ? dropName.split('.').pop() : '';
     const key = objectKeyFor(share.ownerId, ext);
@@ -354,8 +450,10 @@ router.post(
       });
     } catch (e) {
       // Give the reservation back — the owner must not be billed for a file that
-      // was never created by a stranger's failed upload.
+      // was never created by a stranger's failed upload — and the slot with it,
+      // or a failed upload permanently consumes one of the link's uploads.
       await releaseQuota(share.ownerId, req.file.size);
+      await releaseSlot();
       removeObject(key).catch(() => {});
       throw e;
     }
@@ -371,7 +469,8 @@ router.post(
     }
 
     indexFile(file.id); // K1/K4
-    logShareAccess(share.id, 'upload', req); // B7
+    logShareAccess(share.id, 'upload', req); // B7 — the owner-facing access log
+    slotClaimed = false; // committed: the claim is now permanent
 
     notify(share.ownerId, {
       type: 'upload_received',

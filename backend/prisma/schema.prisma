@@ -246,6 +246,12 @@ model Share {
   maxDownloads Int?
   downloads    Int       @default(0)
   allowUpload  Boolean   @default(false) // folder upload-request link (I1)
+  // Drop-box uploads accepted through this link. A COUNTER, not a count of
+  // ShareAccess rows: the cap has to be claimed atomically (one conditional
+  // UPDATE the database serialises per row), and counting a log table cannot do
+  // that — every concurrent uploader reads the same pre-insert count and is let
+  // through. Same reasoning as `downloads` / reserveQuota.
+  uploads      Int       @default(0)
   createdAt    DateTime  @default(now())
   accesses     ShareAccess[]
 

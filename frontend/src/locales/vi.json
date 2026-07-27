@@ -640,7 +640,8 @@
       "view": "xem",
       "download": "tải",
       "upload": "tải lên"
-    }
+    },
+    "uploadsReceived": "Số tệp đã nhận qua liên kết này"
   },
   "audit": {
     "allActions": "Tất cả hành động",

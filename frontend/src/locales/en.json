@@ -640,7 +640,8 @@
       "view": "view",
       "download": "download",
       "upload": "upload"
-    }
+    },
+    "uploadsReceived": "Uploads received via this link"
   },
   "audit": {
     "allActions": "All actions",
