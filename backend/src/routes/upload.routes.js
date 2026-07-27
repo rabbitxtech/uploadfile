@@ -22,7 +22,7 @@ import {
   removeObject,
   uploadPart,
 } from '../services/storage.service.js';
-import { addUsage, assertQuota, netCost, subUsage } from '../services/quota.service.js';
+import { addUsage, assertQuota, netCost, subUsage, reserveQuota } from '../services/quota.service.js';
 import { generateThumbnail, canThumbnail } from '../services/thumbnail.service.js';
 import { canVideoThumbnail, generateVideoThumbnail } from '../services/video.service.js';
 import { backfillChecksum } from '../services/checksum.service.js';
@@ -367,12 +367,24 @@ router.post(
       }
     }
 
-    // Final quota check using the actual bytes, net of what a replace refunds.
+    // Final quota charge using the actual bytes, net of what a replace refunds.
+    //
+    // RESERVED, not checked-then-charged. The old form read usedBytes here and
+    // wrote it a few statements later, so concurrent completes all measured the
+    // same pre-upload balance and all committed — N sessions finishing together
+    // overshot the quota N-fold, and the official client uploads several files at
+    // once. reserveQuota folds the bound and the increment into one conditional
+    // UPDATE, which the database serialises per row. See reserveQuota.
     const refundBytes = await refundForSession(s);
-    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
-    if (BigInt(user.usedBytes) + netCost(total, refundBytes) > BigInt(user.quotaBytes)) {
+    const reserveBytes = netCost(total, refundBytes);
+    try {
+      await reserveQuota(req.user.id, reserveBytes);
+    } catch (e) {
+      // reserveQuota throws the same 413 the old inline check did; failSession
+      // still aborts the multipart upload and marks the row completed so the
+      // orphaned parts don't linger and a retry can't hit NoSuchUpload.
       await failSession();
-      throw payloadTooLarge();
+      throw e;
     }
 
     if (parts.length === 0) {
@@ -439,8 +451,16 @@ router.post(
       include: { tags: true, versions: true, owner: { select: { id: true, name: true, email: true } } },
     });
 
-    await addUsage(req.user.id, total);
-    if (oldSizeBytes > 0n) await subUsage(req.user.id, oldSizeBytes);
+    // reserveQuota already charged netCost(total, refundBytes). What remains is
+    // only the part of the ACTUAL refund that the reservation did not already
+    // absorb — `oldSizeBytes` is re-read at delete time and can differ from the
+    // `refundBytes` the reservation was computed from (a version could have
+    // landed in between). Charging `total` again here would double-count the
+    // reservation; on a shrinking replace the reservation floored to 0 and the
+    // genuine reduction still has to be given back.
+    const stillToRefund = oldSizeBytes - BigInt(total) + reserveBytes;
+    if (stillToRefund > 0n) await subUsage(req.user.id, stillToRefund);
+    else if (stillToRefund < 0n) await addUsage(req.user.id, -stillToRefund);
     if (oldObjectKeys.length) {
       for (const key of oldObjectKeys) {
         removeObject(key).catch((e) =>

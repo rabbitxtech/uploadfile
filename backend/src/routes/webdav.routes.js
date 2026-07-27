@@ -11,7 +11,7 @@ import {
   objectKeyFor,
   removeObject,
 } from '../services/storage.service.js';
-import { assertQuota, addUsage, netCost, subUsage } from '../services/quota.service.js';
+import { netCost, subUsage, reserveQuota, releaseQuota } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
 import { removeHls } from '../services/hls.service.js';
 import { prisma } from '../config/prisma.js';
@@ -234,15 +234,26 @@ router.put('*', async (req, res) => {
   const refundBytes = existing
     ? existing.versions.reduce((n, v) => n + BigInt(v.size), 0n)
     : 0n;
+  // Reserve the net cost atomically rather than checking it and charging later:
+  // the old check-then-charge let concurrent PUTs (rclone and davfs2 both write
+  // in parallel) each read the same balance and all commit, overshooting the
+  // quota. The refund for the bytes this overwrite replaces is still applied
+  // below, after the write actually lands. See reserveQuota.
+  const reserveBytes = netCost(size, refundBytes);
   try {
-    await assertQuota(owner, netCost(size, refundBytes));
+    await reserveQuota(owner, reserveBytes);
   } catch {
     return res.status(507).end('Quota exceeded');
   }
 
   const ext = name.includes('.') ? name.split('.').pop() : '';
   const key = objectKeyFor(owner, ext);
-  await putObjectStream(key, body, size, req.headers['content-type'] || 'application/octet-stream');
+  try {
+    await putObjectStream(key, body, size, req.headers['content-type'] || 'application/octet-stream');
+  } catch (e) {
+    await releaseQuota(owner, reserveBytes);
+    throw e;
+  }
   const checksum = sha256Buffer(body);
 
   if (existing) {
@@ -288,8 +299,16 @@ router.put('*', async (req, res) => {
         where: { fileId: existing.id, version: { not: existing.currentVersion } },
       }),
     ]);
-    await addUsage(owner, size);
-    if (refundBytes > 0n) await subUsage(owner, refundBytes);
+    // reserveQuota already charged netCost(size, refundBytes) — the bytes this
+    // overwrite ADDS. Charging the gross `size` again here and then refunding
+    // would double-count the reservation. What is still owed is only the part of
+    // the refund the net cost did not already absorb: on a growing overwrite
+    // netCost is size-refund and nothing further moves, while on a SHRINKING one
+    // netCost floored to 0 and the genuine reduction (refund - size) has yet to
+    // be given back.
+    const netCharged = netCost(size, refundBytes);
+    const stillToRefund = refundBytes - BigInt(size) + netCharged;
+    if (stillToRefund > 0n) await subUsage(owner, stillToRefund);
     // The new object shares no key with the old ones (objectKeyFor is unique per
     // call), so removing them can't touch what was just written.
     for (const k of new Set(staleKeys)) removeObject(k).catch(() => {});
@@ -297,21 +316,28 @@ router.put('*', async (req, res) => {
     return res.status(204).end();
   }
 
-  await prisma.file.create({
-    data: {
-      name,
-      originalName: name,
-      mimeType: req.headers['content-type'] || 'application/octet-stream',
-      size: BigInt(size),
-      objectKey: key,
-      bucket: BUCKET,
-      checksum,
-      folderId: parent?.id ?? null,
-      ownerId: owner,
-      versions: { create: { version: 1, objectKey: key, size: BigInt(size), checksum } },
-    },
-  });
-  await addUsage(owner, size);
+  // New file: reserveQuota already charged the full `size` (refundBytes is 0
+  // when there is no existing row), so nothing further is owed here.
+  try {
+    await prisma.file.create({
+      data: {
+        name,
+        originalName: name,
+        mimeType: req.headers['content-type'] || 'application/octet-stream',
+        size: BigInt(size),
+        objectKey: key,
+        bucket: BUCKET,
+        checksum,
+        folderId: parent?.id ?? null,
+        ownerId: owner,
+        versions: { create: { version: 1, objectKey: key, size: BigInt(size), checksum } },
+      },
+    });
+  } catch (e) {
+    await releaseQuota(owner, reserveBytes);
+    removeObject(key).catch(() => {});
+    throw e;
+  }
   res.status(201).end();
 });
 

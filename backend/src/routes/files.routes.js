@@ -35,7 +35,7 @@ import {
   putObjectBuffer,
   removeObject,
 } from '../services/storage.service.js';
-import { addUsage, assertQuota } from '../services/quota.service.js';
+import { assertQuota, reserveQuota, releaseQuota } from '../services/quota.service.js';
 import { canThumbnail, generateThumbnail } from '../services/thumbnail.service.js';
 import {
   canFaststart,
@@ -124,32 +124,44 @@ router.post(
       mode: 'strip',
     });
     await assertFileNameFree(req.user.id, folderId, fileName);
-    await assertQuota(req.user.id, req.file.size);
+    // Reserve the bytes atomically instead of check-then-charge: the old
+    // assertQuota/addUsage pair let concurrent uploads all read the same balance
+    // and all commit, so N parallel uploads overshot the quota N-fold (the
+    // browser uploads several files at once, so no attacker was needed).
+    await reserveQuota(req.user.id, req.file.size);
 
     const ext = fileName.includes('.') ? fileName.split('.').pop() : '';
     const key = objectKeyFor(req.user.id, ext);
-    await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
-    const checksum = sha256Buffer(req.file.buffer);
+    let file;
+    try {
+      await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
+      const checksum = sha256Buffer(req.file.buffer);
 
-    const file = await prisma.file.create({
-      data: {
-        name: fileName,
-        originalName: fileName,
-        mimeType: req.file.mimetype,
-        size: BigInt(req.file.size),
-        objectKey: key,
-        bucket: process.env.MINIO_BUCKET || 'uploads',
-        checksum,
-        folderId,
-        ownerId: req.user.id,
-        versions: {
-          create: { version: 1, objectKey: key, size: BigInt(req.file.size), checksum },
+      file = await prisma.file.create({
+        data: {
+          name: fileName,
+          originalName: fileName,
+          mimeType: req.file.mimetype,
+          size: BigInt(req.file.size),
+          objectKey: key,
+          bucket: process.env.MINIO_BUCKET || 'uploads',
+          checksum,
+          folderId,
+          ownerId: req.user.id,
+          versions: {
+            create: { version: 1, objectKey: key, size: BigInt(req.file.size), checksum },
+          },
         },
-      },
-      include: { tags: true, versions: true },
-    });
-
-    await addUsage(req.user.id, req.file.size);
+        include: { tags: true, versions: true },
+      });
+    } catch (e) {
+      // The reservation is already charged, so anything that stops the row being
+      // created has to give it back or the user is billed for bytes they don't
+      // have. Best-effort on the object too — nothing will ever reference it.
+      await releaseQuota(req.user.id, req.file.size);
+      removeObject(key).catch(() => {});
+      throw e;
+    }
 
     if (canThumbnail(req.file.mimetype)) {
       generateThumbnail(key, req.file.mimetype)
@@ -431,7 +443,6 @@ router.post(
       clearTimeout(timeout);
     }
     const buffer = Buffer.concat(chunks, total);
-    await assertQuota(req.user.id, total); // verify against actual size
 
     const contentType = (resp.headers.get('content-type') || 'application/octet-stream')
       .split(';')[0]
@@ -440,26 +451,35 @@ router.post(
     await assertFileNameFree(req.user.id, folderId || null, name);
     const ext = name.includes('.') ? name.split('.').pop() : '';
     const key = objectKeyFor(req.user.id, ext);
-    await putObjectStream(key, buffer, total, contentType);
-    const checksum = sha256Buffer(buffer);
+    // Reserve against the ACTUAL byte count, atomically — the declared
+    // content-length check above is only an early exit, and check-then-charge
+    // let concurrent fetches overshoot the quota. See reserveQuota.
+    await reserveQuota(req.user.id, total);
+    let file;
+    try {
+      await putObjectStream(key, buffer, total, contentType);
+      const checksum = sha256Buffer(buffer);
 
-    const file = await prisma.file.create({
-      data: {
-        name,
-        originalName: name,
-        mimeType: contentType,
-        size: BigInt(total),
-        objectKey: key,
-        bucket: process.env.MINIO_BUCKET || 'uploads',
-        checksum,
-        folderId: folderId || null,
-        ownerId: req.user.id,
-        versions: { create: { version: 1, objectKey: key, size: BigInt(total), checksum } },
-      },
-      include: { tags: true, versions: true },
-    });
-
-    await addUsage(req.user.id, total);
+      file = await prisma.file.create({
+        data: {
+          name,
+          originalName: name,
+          mimeType: contentType,
+          size: BigInt(total),
+          objectKey: key,
+          bucket: process.env.MINIO_BUCKET || 'uploads',
+          checksum,
+          folderId: folderId || null,
+          ownerId: req.user.id,
+          versions: { create: { version: 1, objectKey: key, size: BigInt(total), checksum } },
+        },
+        include: { tags: true, versions: true },
+      });
+    } catch (e) {
+      await releaseQuota(req.user.id, total);
+      removeObject(key).catch(() => {});
+      throw e;
+    }
 
     if (canThumbnail(contentType)) {
       generateThumbnail(key, contentType)
@@ -531,6 +551,7 @@ router.post(
     // File row (and no quota charge) ever accounts for.
     let uploadedKey = null;
     let committed = false;
+    let reserved = 0; // bytes reserved against the quota, released if we never commit
     try {
       const total = dl.size;
       // One segment, like every other path that takes a name from outside. This
@@ -556,7 +577,11 @@ router.post(
         return res.end();
       }
       try {
-        await assertQuota(req.user.id, total); // 413 if the video exceeds quota
+        // Reserved atomically (see reserveQuota) rather than checked and charged
+        // separately. `reserved` drives the release in the catch below: the bytes
+        // are owed only once the File row exists.
+        await reserveQuota(req.user.id, total); // 413 if the video exceeds quota
+        reserved = total;
       } catch (e) {
         send({ type: 'error', error: e?.message || 'Quota exceeded' });
         return res.end();
@@ -584,7 +609,6 @@ router.post(
       });
       committed = true;
 
-      await addUsage(req.user.id, total);
       backfillChecksum(file.id, key); // dedup checksum (async, streams from MinIO)
       if (canVideoThumbnail(mimeType)) makeVideoThumb(file.id, key, mimeType);
       postProcessMedia(file.id, mimeType); // faststart → HLS + transcribe
@@ -594,6 +618,10 @@ router.post(
       send({ type: 'done', file });
     } catch (e) {
       if (uploadedKey && !committed) removeObject(uploadedKey).catch(() => {}); // drop the orphan
+      // Give back a reservation the File row never claimed. This route reports
+      // failures as NDJSON events rather than throwing, so without this the
+      // bytes of every failed import stayed charged forever.
+      if (reserved && !committed) await releaseQuota(req.user.id, reserved).catch(() => {});
       send({ type: 'error', error: e?.message || 'Import failed' });
     } finally {
       dl.cleanup();
@@ -936,8 +964,10 @@ router.post(
     });
     if (!file) throw notFound('File');
     // Charge the quota to the file's owner (an admin may be acting on someone
-    // else's file).
-    await assertQuota(file.ownerId, req.file.size);
+    // else's file). Reserved atomically — a version upload adds bytes on top of
+    // the existing ones, so concurrent version uploads raced the same way plain
+    // uploads did. See reserveQuota.
+    await reserveQuota(file.ownerId, req.file.size);
 
     // Only the extension is taken from the upload here (a new version keeps the
     // file's existing name), but the raw multipart filename can still carry a
@@ -949,40 +979,46 @@ router.post(
     });
     const ext = versionName.includes('.') ? versionName.split('.').pop() : '';
     const key = objectKeyFor(file.ownerId, ext);
-    await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
-    // Every other write path stores the checksum on BOTH the File and its
-    // version row, and the rest of the codebase reads File.checksum as "the hash
-    // of the CURRENT bytes". Leaving it at the previous version's value here made
-    // this the one path that desynced it: /duplicates then groups the file with
-    // whatever still matches its superseded content, and collab-save's
-    // `checksum === file.checksum` short-circuit reads a fresh upload as
-    // "unchanged" and silently drops the next edit.
-    const checksum = sha256Buffer(req.file.buffer);
+    let updated;
+    try {
+      await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
+      // Every other write path stores the checksum on BOTH the File and its
+      // version row, and the rest of the codebase reads File.checksum as "the hash
+      // of the CURRENT bytes". Leaving it at the previous version's value here made
+      // this the one path that desynced it: /duplicates then groups the file with
+      // whatever still matches its superseded content, and collab-save's
+      // `checksum === file.checksum` short-circuit reads a fresh upload as
+      // "unchanged" and silently drops the next edit.
+      const checksum = sha256Buffer(req.file.buffer);
 
-    const nextVersion = file.currentVersion + 1;
-    await prisma.fileVersion.create({
-      data: {
-        fileId: file.id,
-        version: nextVersion,
-        objectKey: key,
-        size: BigInt(req.file.size),
-        checksum,
-      },
-    });
-    const updated = await prisma.file.update({
-      where: { id: file.id },
-      data: {
-        objectKey: key,
-        size: BigInt(req.file.size),
-        mimeType: req.file.mimetype,
-        currentVersion: nextVersion,
-        checksum,
-        // New content invalidates the old renditions (they'd play stale video).
-        hlsReady: false,
-      },
-      include: { versions: { orderBy: { version: 'desc' } } },
-    });
-    await addUsage(file.ownerId, req.file.size);
+      const nextVersion = file.currentVersion + 1;
+      await prisma.fileVersion.create({
+        data: {
+          fileId: file.id,
+          version: nextVersion,
+          objectKey: key,
+          size: BigInt(req.file.size),
+          checksum,
+        },
+      });
+      updated = await prisma.file.update({
+        where: { id: file.id },
+        data: {
+          objectKey: key,
+          size: BigInt(req.file.size),
+          mimeType: req.file.mimetype,
+          currentVersion: nextVersion,
+          checksum,
+          // New content invalidates the old renditions (they'd play stale video).
+          hlsReady: false,
+        },
+        include: { versions: { orderBy: { version: 'desc' } } },
+      });
+    } catch (e) {
+      await releaseQuota(file.ownerId, req.file.size);
+      removeObject(key).catch(() => {});
+      throw e;
+    }
     if (file.hlsReady) removeHls(file.id).catch(() => {});
     postProcessMedia(file.id, req.file.mimetype);
     res.status(201).json(updated);
@@ -1035,10 +1071,18 @@ router.post(
       return res.json({ ok: true, unchanged: true, version: file.currentVersion });
     }
 
-    await assertQuota(file.ownerId, buf.length);
+    // Reserved atomically (see reserveQuota). Every exit below that does NOT
+    // mint a version must release it again — the bytes are only owed once the
+    // FileVersion row exists.
+    await reserveQuota(file.ownerId, buf.length);
     const ext = file.name.includes('.') ? file.name.split('.').pop() : 'txt';
     const key = objectKeyFor(file.ownerId, ext);
-    await putObjectBuffer(key, buf, file.mimeType || 'text/plain');
+    try {
+      await putObjectBuffer(key, buf, file.mimeType || 'text/plain');
+    } catch (e) {
+      await releaseQuota(file.ownerId, buf.length);
+      throw e;
+    }
 
     // Two clients can flush different content for the same file at the same
     // instant (the close-flush isn't leader-gated). Both would read the same
@@ -1055,10 +1099,15 @@ router.post(
         where: { id: file.id },
         select: { currentVersion: true, checksum: true, trashedAt: true },
       });
-      if (!fresh || fresh.trashedAt) throw notFound('File');
+      if (!fresh || fresh.trashedAt) {
+        await releaseQuota(file.ownerId, buf.length);
+        removeObject(key).catch(() => {});
+        throw notFound('File');
+      }
       // Another writer already saved this exact content → don't mint a dup; the
       // object we just uploaded is now an orphan, so drop it (best-effort).
       if (fresh.checksum === checksum) {
+        await releaseQuota(file.ownerId, buf.length);
         removeObject(key).catch(() => {});
         return res.json({ ok: true, unchanged: true, version: fresh.currentVersion });
       }
@@ -1077,15 +1126,16 @@ router.post(
         break;
       } catch (e) {
         if (e?.code === 'P2002') continue; // version race — re-read and retry
+        await releaseQuota(file.ownerId, buf.length);
         removeObject(key).catch(() => {}); // unexpected failure: don't strand the object
         throw e;
       }
     }
     if (nextVersion === null) {
+      await releaseQuota(file.ownerId, buf.length);
       removeObject(key).catch(() => {});
       throw new HttpError(409, 'Could not save — too many concurrent edits, try again');
     }
-    await addUsage(file.ownerId, buf.length);
     emitFileChange(file.ownerId, file.folderId);
     res.json({ ok: true, version: nextVersion });
   }),

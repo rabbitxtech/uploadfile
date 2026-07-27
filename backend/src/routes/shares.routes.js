@@ -11,8 +11,8 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { findFolderNameClash, sanitizeEntryName, zipEntryName } from '../utils/namecollision.js';
-import { getObjectStream, putObjectStream, objectKeyFor } from '../services/storage.service.js';
-import { assertQuota, addUsage } from '../services/quota.service.js';
+import { getObjectStream, putObjectStream, objectKeyFor, removeObject } from '../services/storage.service.js';
+import { reserveQuota, releaseQuota } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
 import { indexFile } from '../services/ai.service.js';
 import { canThumbnail, generateThumbnail } from '../services/thumbnail.service.js';
@@ -324,28 +324,41 @@ router.post(
       throw conflict('A folder with that name already exists here');
     }
 
-    await assertQuota(share.ownerId, req.file.size);
+    // Reserve atomically rather than check-then-charge. This endpoint takes NO
+    // authentication, so the check-then-charge gap let anyone holding an upload
+    // link fire concurrent uploads that all read the same pre-upload balance and
+    // all committed — pushing the link owner arbitrarily past the quota that is
+    // supposed to bound their storage. See reserveQuota.
+    await reserveQuota(share.ownerId, req.file.size);
 
     const ext = dropName.includes('.') ? dropName.split('.').pop() : '';
     const key = objectKeyFor(share.ownerId, ext);
-    await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
-    const checksum = sha256Buffer(req.file.buffer);
+    let file;
+    try {
+      await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
+      const checksum = sha256Buffer(req.file.buffer);
 
-    const file = await prisma.file.create({
-      data: {
-        name: dropName,
-        originalName: dropName,
-        mimeType: req.file.mimetype,
-        size: BigInt(req.file.size),
-        objectKey: key,
-        bucket: process.env.MINIO_BUCKET || 'uploads',
-        checksum,
-        folderId: folder.id,
-        ownerId: share.ownerId,
-        versions: { create: { version: 1, objectKey: key, size: BigInt(req.file.size), checksum } },
-      },
-    });
-    await addUsage(share.ownerId, req.file.size);
+      file = await prisma.file.create({
+        data: {
+          name: dropName,
+          originalName: dropName,
+          mimeType: req.file.mimetype,
+          size: BigInt(req.file.size),
+          objectKey: key,
+          bucket: process.env.MINIO_BUCKET || 'uploads',
+          checksum,
+          folderId: folder.id,
+          ownerId: share.ownerId,
+          versions: { create: { version: 1, objectKey: key, size: BigInt(req.file.size), checksum } },
+        },
+      });
+    } catch (e) {
+      // Give the reservation back — the owner must not be billed for a file that
+      // was never created by a stranger's failed upload.
+      await releaseQuota(share.ownerId, req.file.size);
+      removeObject(key).catch(() => {});
+      throw e;
+    }
 
     if (canThumbnail(req.file.mimetype)) {
       generateThumbnail(key, req.file.mimetype)

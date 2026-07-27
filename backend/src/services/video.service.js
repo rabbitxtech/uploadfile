@@ -7,6 +7,7 @@ import { pipeline } from 'node:stream/promises';
 import sharp from 'sharp';
 import { minio, BUCKET } from '../config/minio.js';
 import { getObjectStream, putObjectBuffer } from './storage.service.js';
+import { addUsage, subUsage } from './quota.service.js';
 import { prisma } from '../config/prisma.js';
 
 const REMUXABLE = new Set(['video/mp4', 'video/quicktime', 'video/x-m4v']);
@@ -148,6 +149,53 @@ export async function faststartRemux(objectKey, mimeType) {
   }
 }
 
+/**
+ * Bring a file's recorded size and its owner's quota back in line after the
+ * remux rewrote the object in place. Exported so the bookkeeping can be tested
+ * without driving ffmpeg.
+ *
+ * Two rules this has to follow, and originally followed neither:
+ *
+ *  - **Go through quota.service.** It used to write `usedBytes: { increment:
+ *    delta }` straight onto the User row, and a remux normally SHRINKS the file,
+ *    so that is a bare decrement — the one thing the byte-total rule forbids.
+ *    Nothing floored it at zero, so a refund larger than the current balance
+ *    left usedBytes NEGATIVE (verified: 100 - 999 stores as -899), and a
+ *    negative balance makes assertQuota pass for ANY size — the user silently
+ *    gets unlimited storage and nothing brings the counter back. addUsage and
+ *    subUsage are the only correct ways to move this column.
+ *
+ *  - **Move the FileVersion row with it.** A file occupies the SUM of its
+ *    FileVersion rows, not File.size: every hard-delete path (trash.routes.js,
+ *    the retention sweep, the replace branch of upload/complete) refunds that
+ *    sum. Updating only File.size meant the file was charged the post-remux size
+ *    while its eventual refund was still computed from the pre-remux one, so
+ *    deleting it later left the counter permanently off by the difference — in
+ *    whichever direction the remux went, and unreconcilable once the rows are
+ *    gone.
+ *
+ * The remux is a container rewrite of the CURRENT bytes, so it is the current
+ * version's row that moves; older versions still point at their own untouched
+ * objects and must not be touched.
+ */
+export async function reconcileRemuxedSize(file, newSize) {
+  const oldSize = BigInt(file.size);
+  const size = BigInt(newSize);
+  const delta = size - oldSize;
+  if (delta === 0n) return;
+
+  await prisma.$transaction([
+    prisma.file.update({ where: { id: file.id }, data: { size } }),
+    prisma.fileVersion.updateMany({
+      where: { fileId: file.id, version: file.currentVersion },
+      data: { size },
+    }),
+  ]);
+
+  if (delta > 0n) await addUsage(file.ownerId, delta);
+  else await subUsage(file.ownerId, -delta);
+}
+
 // Best-effort: fast-start a File's video object and reconcile the stored size +
 // owner quota with the new object size. Never throws, never alters content.
 export async function optimizeFileVideo(fileId) {
@@ -156,16 +204,7 @@ export async function optimizeFileVideo(fileId) {
     if (!file || !canFaststart(file.mimeType)) return;
     const newSize = await faststartRemux(file.objectKey, file.mimeType);
     if (newSize == null) return;
-
-    const oldSize = BigInt(file.size);
-    const delta = BigInt(newSize) - oldSize;
-    await prisma.file.update({ where: { id: file.id }, data: { size: BigInt(newSize) } });
-    if (delta !== 0n) {
-      await prisma.user.update({
-        where: { id: file.ownerId },
-        data: { usedBytes: { increment: delta } },
-      });
-    }
+    await reconcileRemuxedSize(file, newSize);
   } catch (e) {
     console.warn('[faststart] optimizeFileVideo failed:', e?.message);
   }

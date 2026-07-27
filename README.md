@@ -74,6 +74,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Only a real session token authenticates a request** — the short-lived tokens issued mid-2FA and for video playback are signed with the same key, so the REST middleware rejects anything carrying a purpose claim rather than relying on those tokens happening to omit a session id; the check runs before any database lookup, so an unusable token costs nothing
 - **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
 - **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
+- **The quota holds when uploads arrive at once** — checking the remaining space and then charging for the upload were two separate steps with the whole transfer in between, so simultaneous uploads all measured the same starting balance, all decided they fit, and all committed: ten parallel 200-byte uploads against a 1000-byte limit stored 2000 bytes. This needed no trickery — the uploader sends several files at once, so ordinary use overshot — and an upload-request link reaches the same path with no login at all, meaning a stranger holding the link could push the owner arbitrarily past their limit. Space is now claimed in a single step that only succeeds if it still fits, applied to every way in: the web uploader, large chunked uploads, uploads by URL, video imports, new versions, editor saves, the WebDAV mount and anonymous upload links. A claim that doesn't turn into a stored file is given back
 - **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
 - **A two-factor recovery code is spent exactly once** — the codes are the way back in when an authenticator is lost, and they're the credential most likely to leak in bulk (they're handed over as a printable block that ends up in notes and password managers), so single-use is the whole point of issuing eight of them. Consuming one used to be a read-then-write, which broke in both directions under concurrency: the *same* code presented twice at the same instant was accepted twice — a second-factor bypass — while two *different* codes used at once left one of them still valid after it had already logged someone in. The consume is now a conditional write, so a code is either spent or refused
 - **Collections can't be used to read someone else's files** — a collection is yours, but its contents are a join table, so adding a file checks that *you own it*; you can't name a stranger's file id and have the listing hand back its contents (including extracted OCR text)
@@ -89,6 +90,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Restoring a folder rescues its contents too, not just the folder** — "restore" deliberately clears only the flag on what you selected: restoring a folder brings the folder back but leaves the files inside still marked deleted, because a folder you restore may well be one you want only part of back. That left those files in a state nothing accounted for — the folder was live and listed again, you'd open it and find it empty, and reasonably assume the contents were still on their way. Thirty days after the *original* delete, the auto-clean would then destroy them, files and stored bytes both, out of a folder sitting in plain view; emptying the trash by hand did the same thing immediately. Both now leave a deleted file alone while the folder holding it is live, and only count the bytes they actually reclaimed. Deleting one named file from the trash still works exactly as asked
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 - **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
+- **Optimising a video keeps the books straight** — the "make this video start faster" pass rewrites the stored file (same content, smaller container) and then has to correct the space it takes up. It did that by adjusting the account total directly, without the floor that keeps the figure from going below zero — and a negative total makes every later size check pass, quietly turning the quota off for that account with no way to notice or undo it. It also updated the file's own size but not its version record, and deleting a file refunds what the *version records* say, so every optimised video left the total permanently wrong once it was eventually deleted. Both halves now go through the same accounting the rest of the app uses
 - **Deleting an account takes its storage with it** — the file records are the only index of what's in object storage, and they disappear with the account, so the objects (originals, thumbnails, video renditions) are removed first; otherwise they'd linger with nothing left to attribute them to
 - **A trashed file accepts no new content** — uploading a version to (or re-optimising) a file that's in the trash charged the owner for bytes hanging off a row they can't see and never chose to keep, and the retention sweep could delete it moments later; both routes now refuse, matching every other write path
 - **Two folders can't end up sharing one path** — a folder's path is how the app identifies its whole subtree, so a rename that landed one folder on a live sibling's path made deletes and renames reach into the *other* subtree; the WebDAV mount is held to the same rule the web UI already enforced
@@ -420,11 +422,14 @@ to end when a shared file or folder is trashed (while the owner keeps theirs),
 the one-name-one-resource rule that keeps a file and a folder off the same
 path, the one-path-segment rule that stops a name forging a path, the two
 delete paths that must leave a deleted file alone while the folder holding it is
-live (and refund only what they actually removed), and the single-use guarantee
-a two-factor recovery code owes under concurrency. It is excluded from
+live (and refund only what they actually removed), the single-use guarantee
+a two-factor recovery code owes under concurrency, the quota that has to hold
+when uploads arrive simultaneously (single-shot, chunked and the anonymous
+upload link), and the video-optimise pass that must not drive the usage counter
+negative or leave the version record behind. It is excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Twenty-four files: `files-access.test.js`, `upload-replace.test.js`,
+Twenty-six files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `retention-restored-file.test.js`,
 `trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
 `webdav-overwrite.test.js`, `webdav-move.test.js`,
@@ -434,7 +439,8 @@ Twenty-four files: `files-access.test.js`, `upload-replace.test.js`,
 `file-patch-trashed.test.js`, `share-folder-trashed.test.js`,
 `folder-move-trashed-parent.test.js`, `upload-gates.test.js`,
 `presence-access.test.js`, `trashed-grant-access.test.js`,
-`name-collision.test.js`, `name-segment.test.js`.
+`name-collision.test.js`, `name-segment.test.js`,
+`quota-race.test.js`, `optimize-quota.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \

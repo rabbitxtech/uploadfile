@@ -43,6 +43,79 @@ export async function addUsage(userId, delta) {
   });
 }
 
+/**
+ * Atomically RESERVE `delta` bytes against the user's quota.
+ *
+ * `assertQuota` reads the balance and `addUsage` writes it, and every upload
+ * path runs them as two separate statements with the whole upload in between —
+ * a read-modify-write on exactly the counter that is supposed to be the limit.
+ * Concurrent uploads all read the same pre-upload balance, all decide they fit,
+ * and all commit: ten parallel 200-byte uploads against a 1000-byte quota land
+ * 2000 bytes, i.e. the quota is exceeded by however many requests are in flight.
+ * Browsers upload in parallel by default, so this needs no attacker — and the
+ * anonymous drop-box (`POST /shares/public/:token/upload`) reaches it with no
+ * credentials at all, which makes an owner's quota unenforceable by a stranger.
+ *
+ * Fixing it in the two callers is not possible: the gap is between them. So the
+ * check and the charge become ONE conditional statement — increment only if the
+ * result still fits — which the database serialises per row. `updateMany` with
+ * the bound in `where` compiles to a single UPDATE ... WHERE, so two concurrent
+ * reservations cannot both see the pre-increment balance.
+ *
+ * Deliberately expressed with `usedBytes: { lte: quota - delta }` rather than a
+ * raw SQL expression: `switch-db.js` supports postgresql/mysql/sqlite, and this
+ * stays portable across all three. `quota` is read first, but reading it stale
+ * is harmless — a quota change is an admin action, not a per-request race, and
+ * the byte bound is still applied atomically against the live `usedBytes`.
+ *
+ * Returns nothing; throws the same 413 assertQuota throws, so call sites keep
+ * their existing error handling. On failure NOTHING is reserved.
+ */
+export async function reserveQuota(userId, additionalBytes) {
+  const add = BigInt(additionalBytes);
+  const u = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { quotaBytes: true, usedBytes: true },
+  });
+  if (!u) return; // no such user: nothing to charge, same as assertQuota
+  if (add <= 0n) return; // a zero/negative reservation charges nothing
+
+  const quota = BigInt(u.quotaBytes);
+  const ceiling = quota - add;
+  if (ceiling < 0n) {
+    // The single upload is larger than the entire quota — it can never fit, and
+    // `lte: negative` would be an unsatisfiable bound reported as contention.
+    throw payloadTooLarge(`Quota exceeded: used ${BigInt(u.usedBytes)} + ${add} > ${quota}`);
+  }
+
+  const reserved = await prisma.user.updateMany({
+    where: { id: userId, usedBytes: { lte: ceiling } },
+    data: { usedBytes: { increment: add } },
+  });
+  if (reserved.count === 0) {
+    const fresh = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { usedBytes: true },
+    });
+    throw payloadTooLarge(
+      `Quota exceeded: used ${BigInt(fresh?.usedBytes ?? u.usedBytes)} + ${add} > ${quota}`,
+    );
+  }
+}
+
+/**
+ * Release a reservation made by `reserveQuota` when the upload it was taken for
+ * does not become a File row (an error after the reserve, or a path that
+ * refuses the upload later on).
+ *
+ * This is `subUsage` — the floor-at-zero refund — under a name that says why it
+ * is being called, so a reserve/release pair reads as one unit at the call site
+ * and is not mistaken for a hard-delete refund.
+ */
+export function releaseQuota(userId, delta) {
+  return subUsage(userId, delta);
+}
+
 export async function subUsage(userId, delta) {
   const d = BigInt(delta);
   if (d <= 0n) return;
