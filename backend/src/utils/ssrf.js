@@ -7,12 +7,25 @@ import { badRequest } from './errors.js';
 
 export function isBlockedIp(ip) {
   const h = ip.toLowerCase().replace(/^\[|\]$/g, '').replace(/^::ffff:/, '');
-  if (h === '0.0.0.0' || h === '::1' || h === '::') return true;
+  if (h === '::1' || h === '::') return true;
   if (/^127\./.test(h)) return true;
   if (/^10\./.test(h)) return true;
   if (/^192\.168\./.test(h)) return true;
   if (/^172\.(1[6-9]|2\d|3[01])\./.test(h)) return true;
   if (/^169\.254\./.test(h)) return true; // link-local / cloud metadata
+  // RFC 1122 "this network" — the WHOLE /8, not just 0.0.0.0. On Linux a
+  // connection to 0.x.y.z reaches the local host, so matching only the exact
+  // 0.0.0.0 left "0.1.2.3" as a plain loopback bypass.
+  if (/^0\./.test(h)) return true;
+  // RFC 6598 carrier-grade NAT (100.64.0.0/10 → 100.64.x–100.127.x). Not an
+  // exotic range in this app's deployment shape: it is Tailscale's entire
+  // address space, a common Kubernetes pod/service network, and used by several
+  // clouds for internal endpoints. Reachable from the container, never public.
+  if (/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(h)) return true;
+  // RFC 6890 IETF protocol assignments (192.0.0.0/24) and RFC 2544 benchmarking
+  // (198.18.0.0/15) — both non-routable and used for internal test networks.
+  if (/^192\.0\.0\./.test(h)) return true;
+  if (/^198\.1[89]\./.test(h)) return true;
   if (/^fe80:/i.test(h) || /^fc00:/i.test(h) || /^fd/i.test(h)) return true;
   return false;
 }

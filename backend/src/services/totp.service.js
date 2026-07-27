@@ -50,21 +50,59 @@ export function generateRecoveryCodes() {
 }
 
 // Try `code` against the user's unused recovery codes; consumes it on match.
+//
+// The consume is a compare-and-set, not a read-modify-write. `recoveryCodes` is
+// a JSON *string* column, so it can only be rewritten wholesale, and a plain
+// read-then-write breaks in both directions when two requests land together:
+//
+//   - The SAME code twice: both read a list containing it, both match, both
+//     write back a list without it, and both return true. One recovery code
+//     logs in twice — and a recovery code is a full second-factor bypass, the
+//     credential most likely to leak in bulk (they are handed over as a
+//     printable block that gets pasted into notes and password managers).
+//     Single-use is the entire reason they are issued in eights and stored
+//     hashed.
+//   - TWO DIFFERENT codes at once: each writes back the list it read, so the
+//     second write restores the code the first one just spent. A code that was
+//     used successfully stays live.
+//
+// Gating the write on the exact string we based the new list on makes the
+// update atomic, and re-reading on contention lets the loser retry against the
+// list the winner actually wrote. Bounded, then fail closed: refusing a valid
+// code under sustained contention is the safe direction — the user retries,
+// whereas accepting one twice is the bypass this exists to prevent.
 export async function consumeRecoveryCode(user, code) {
   if (!user.recoveryCodes || !code) return false;
-  let hashes;
-  try {
-    hashes = JSON.parse(user.recoveryCodes);
-  } catch {
-    return false;
-  }
   const h = sha256(String(code).trim().toLowerCase());
-  if (!Array.isArray(hashes) || !hashes.includes(h)) return false;
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { recoveryCodes: JSON.stringify(hashes.filter((x) => x !== h)) },
-  });
-  return true;
+
+  let current = user.recoveryCodes;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let hashes;
+    try {
+      hashes = JSON.parse(current);
+    } catch {
+      return false;
+    }
+    // Re-checked on every attempt, against the list as it stands now: if a
+    // racing request spent this same code first, it is gone from the list the
+    // retry reads and this call correctly refuses.
+    if (!Array.isArray(hashes) || !hashes.includes(h)) return false;
+
+    const next = JSON.stringify(hashes.filter((x) => x !== h));
+    const written = await prisma.user.updateMany({
+      where: { id: user.id, recoveryCodes: current },
+      data: { recoveryCodes: next },
+    });
+    if (written.count > 0) return true;
+
+    const fresh = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: { recoveryCodes: true },
+    });
+    if (!fresh?.recoveryCodes) return false;
+    current = fresh.recoveryCodes;
+  }
+  return false;
 }
 
 // Login-time check: a 6-digit TOTP code or a recovery code (consumed).

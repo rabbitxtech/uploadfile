@@ -68,13 +68,14 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 ### Security
 - Rate limiting on auth + public routes (`express-rate-limit`, proxy-aware)
 - **Audit log** (admin-viewable) of sensitive actions
-- SSRF guard on upload-from-URL (DNS-resolution check, **re-validated on every redirect hop**)
+- SSRF guard on upload-from-URL (DNS-resolution check, **re-validated on every redirect hop**) — the blocked set covers the ranges that are *internal in practice*, not just the textbook private ones: carrier-grade NAT (`100.64/10`, which is Tailscale's entire address space and a common Kubernetes pod network), the whole of `0.0.0.0/8` (on Linux `0.1.2.3` reaches the local host, so blocking only the exact `0.0.0.0` left a plain loopback bypass), and the IETF special-use and benchmarking ranges
 - **Content-Security-Policy** enabled (helmet); password-protected shares don't reveal their contents until unlocked
 - **Revocable sessions enforced on WebSockets too** — every socket (`/ws`, `/yjs`, `/gws`) validates the session row and rejects purpose-scoped tokens, so "log out everywhere" also cuts realtime
 - **Only a real session token authenticates a request** — the short-lived tokens issued mid-2FA and for video playback are signed with the same key, so the REST middleware rejects anything carrying a purpose claim rather than relying on those tokens happening to omit a session id; the check runs before any database lookup, so an unusable token costs nothing
 - **Folder shares are scoped to their owner** — folder paths aren't unique across accounts (two people can both have `/docs`), so grants match on owner as well as path and can't spill onto a same-named folder belonging to someone else
 - **Quota can't be tricked** — the chunked upload enforces its declared size on every part (not just at the end, so unpaid bytes never accumulate in storage), and refunds floor `usedBytes` at zero so overlapping deletes can't drive it negative into unlimited storage
 - **A comment can't fan out** — `@mentions` are capped per comment, so one post can't turn into hundreds of user lookups or notify half the instance
+- **A two-factor recovery code is spent exactly once** — the codes are the way back in when an authenticator is lost, and they're the credential most likely to leak in bulk (they're handed over as a printable block that ends up in notes and password managers), so single-use is the whole point of issuing eight of them. Consuming one used to be a read-then-write, which broke in both directions under concurrency: the *same* code presented twice at the same instant was accepted twice — a second-factor bypass — while two *different* codes used at once left one of them still valid after it had already logged someone in. The consume is now a conditional write, so a code is either spent or refused
 - **Collections can't be used to read someone else's files** — a collection is yours, but its contents are a join table, so adding a file checks that *you own it*; you can't name a stranger's file id and have the listing hand back its contents (including extracted OCR text)
 - Refuses to start in prod without a strong `JWT_SECRET`, `POSTGRES_PASSWORD` or MinIO credentials; datastore ports are closed in prod; redacted structured logs
 
@@ -84,7 +85,8 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Empty files upload like any other** — object storage can't hold a zero-byte *part*, so a 0-byte file is sent as no parts at all and the empty object is written directly; every file goes through the chunked path, so treating "no parts" as an error made empty files impossible to upload rather than merely unusual
 - **A new version updates the file's fingerprint** — uploading a version rewrites the checksum on both the file and the version row, so the duplicate finder groups by what a file *currently* holds, and the collaborative editor's "unchanged, skip the save" check can't mistake fresh content for content it already saved and drop your next edit
 - **Overwriting a video drops its old renditions** — adaptive-streaming segments are keyed by file id, so an overwrite that left them in place would keep playing the *previous* video under the new file's name; every path that replaces content (new version, replace-on-duplicate, WebDAV overwrite, delete) clears them
-- **Trash auto-clean won't take a file you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
+- **Trash auto-clean won't take a folder you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
+- **Restoring a folder rescues its contents too, not just the folder** — "restore" deliberately clears only the flag on what you selected: restoring a folder brings the folder back but leaves the files inside still marked deleted, because a folder you restore may well be one you want only part of back. That left those files in a state nothing accounted for — the folder was live and listed again, you'd open it and find it empty, and reasonably assume the contents were still on their way. Thirty days after the *original* delete, the auto-clean would then destroy them, files and stored bytes both, out of a folder sitting in plain view; emptying the trash by hand did the same thing immediately. Both now leave a deleted file alone while the folder holding it is live, and only count the bytes they actually reclaimed. Deleting one named file from the trash still works exactly as asked
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 - **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
 - **Deleting an account takes its storage with it** — the file records are the only index of what's in object storage, and they disappear with the account, so the objects (originals, thumbnails, video renditions) are removed first; otherwise they'd linger with nothing left to attribute them to
@@ -416,12 +418,16 @@ when a chunked upload completes, the read-access check a presence room owes
 before it broadcasts viewers' names and addresses, and the grant access that has
 to end when a shared file or folder is trashed (while the owner keeps theirs),
 the one-name-one-resource rule that keeps a file and a folder off the same
-path, and the one-path-segment rule that stops a name forging a path. It is
-excluded from
+path, the one-path-segment rule that stops a name forging a path, the two
+delete paths that must leave a deleted file alone while the folder holding it is
+live (and refund only what they actually removed), and the single-use guarantee
+a two-factor recovery code owes under concurrency. It is excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Twenty-one files: `files-access.test.js`, `upload-replace.test.js`,
-`retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
+Twenty-four files: `files-access.test.js`, `upload-replace.test.js`,
+`retention.test.js`, `retention-restored-file.test.js`,
+`trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
+`webdav-overwrite.test.js`, `webdav-move.test.js`,
 `collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
 `auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
 `trashed-writes.test.js`, `trash-restore.test.js`,

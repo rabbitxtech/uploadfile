@@ -19,10 +19,30 @@ export async function purgeExpiredTrash() {
   if (!days || days <= 0) return { files: 0, folders: 0, freedBytes: '0' };
   const cutoff = new Date(Date.now() - days * DAY_MS);
 
-  const files = await prisma.file.findMany({
-    where: { trashedAt: { not: null, lt: cutoff } },
-    include: { versions: true },
-  });
+  // A file is only expired if it is STILL somewhere the user can't see it.
+  //
+  // `trashedAt` is per-row, and restore un-trashes only the exact ids it is
+  // handed — it deliberately does not walk DOWN into a folder's contents, since
+  // a user restoring a folder may want only part of it back. So restoring a
+  // trashed folder brings the folder back live while every file inside keeps the
+  // stamp from when the folder was trashed. The folder is listed again (the
+  // listing filters on the folder's own `trashedAt`), the user opens it and sees
+  // nothing, and assumes the contents are still on their way — and then this
+  // sweep hard-deletes those files, objects and all, out of a folder that is
+  // live and visible. Silent, unattended, permanent.
+  //
+  // This is the file-side twin of the `deletableFolderIds` guard below: that one
+  // keeps the cascade from destroying a restored child FOLDER. Skip a file whose
+  // folder is live and let it go on a later pass — once the folder is trashed
+  // again, or the file is hard-deleted from the trash by hand. A file at the
+  // root (`folderId: null`) has no folder to be restored out of, so the trash
+  // view is showing it and it expires normally.
+  const files = (
+    await prisma.file.findMany({
+      where: { trashedAt: { not: null, lt: cutoff } },
+      include: { versions: true, folder: { select: { trashedAt: true } } },
+    })
+  ).filter((f) => !f.folder || f.folder.trashedAt !== null);
 
   const freedByOwner = new Map();
   let freed = 0n;

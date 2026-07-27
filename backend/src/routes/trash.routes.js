@@ -176,10 +176,28 @@ router.post(
   '/empty',
   asyncHandler(async (req, res) => {
     const ownerId = effectiveOwnerId(req);
-    const files = await prisma.file.findMany({
-      where: { ownerId, trashedAt: { not: null } },
-      include: { versions: true },
-    });
+    // Skip a trashed file that now sits in a LIVE folder — the same rule the
+    // retention sweep applies, and the file-side twin of the folder guard below.
+    //
+    // Restore un-trashes only the ids it is handed and deliberately never walks
+    // DOWN into a folder's contents (a user restoring a folder may want only
+    // part of it back). So restoring a trashed folder brings the folder back
+    // live and listed while every file inside keeps its old stamp. The user
+    // sees the rescued folder in their files, then empties the trash to reclaim
+    // space — and its contents are hard-deleted out from under them, objects
+    // and all. Nothing warns them: the trash view lists those files by name,
+    // but they have already decided the folder is a keeper.
+    //
+    // A file at the root has no folder to have been restored out of, so the
+    // trash view is genuinely showing it and it is emptied normally. The
+    // per-file DELETE /trash/file/:id is deliberately NOT given this rule —
+    // there the user named that one file explicitly.
+    const files = (
+      await prisma.file.findMany({
+        where: { ownerId, trashedAt: { not: null } },
+        include: { versions: true, folder: { select: { trashedAt: true } } },
+      })
+    ).filter((f) => !f.folder || f.folder.trashedAt !== null);
     let total = 0n;
     for (const f of files) {
       for (const v of f.versions) {
@@ -209,8 +227,12 @@ router.post(
     ]);
     const deletableFolders = deletableFolderIds(trashedFolders, survivors);
 
+    // Delete exactly the files whose bytes were counted above. A blanket
+    // `deleteMany({ trashedAt: { not: null } })` would ignore the filter and
+    // destroy the held-back rows anyway — while `total` refunded less than it
+    // removed, leaving the counter permanently overstating what is stored.
     await prisma.$transaction([
-      prisma.file.deleteMany({ where: { ownerId, trashedAt: { not: null } } }),
+      prisma.file.deleteMany({ where: { id: { in: files.map((f) => f.id) } } }),
       prisma.folder.deleteMany({ where: { id: { in: deletableFolders } } }),
     ]);
     await subUsage(ownerId, total);
