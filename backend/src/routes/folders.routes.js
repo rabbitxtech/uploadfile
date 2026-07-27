@@ -5,7 +5,7 @@ import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
 import { folderAccessLevel } from '../services/access.service.js';
-import { findFileNameClash } from '../utils/namecollision.js';
+import { findFileNameClash, sanitizeEntryName } from '../utils/namecollision.js';
 import { stripIndexFieldsAll } from './files/_shared.js';
 import {
   parseListQuery,
@@ -209,6 +209,12 @@ router.post(
     const data = z
       .object({ name: z.string().min(1).max(255), parentId: z.string().nullable().optional() })
       .parse(req.body);
+    // A folder name is ONE segment. `path` is built by joining names with "/",
+    // so a name carrying its own "/" forges a path: the row lands with
+    // `parentId: null` yet a `path` pointing deep inside another tree, which
+    // permanently blocks the real folder at that position and makes an unrelated
+    // parent's delete cascade sweep it away. See sanitizeEntryName.
+    const name = sanitizeEntryName(data.name, { label: 'folder name' });
 
     // A trashed parent is not a place anything can be created: the child would
     // be live inside a folder the listing hides, and a later restore of the
@@ -220,7 +226,7 @@ router.post(
       : null;
     if (data.parentId && !parent) throw notFound('Parent folder');
 
-    const path = joinPath(parent?.path ?? '/', data.name);
+    const path = joinPath(parent?.path ?? '/', name);
     await assertNoSiblingCollision(req.user.id, path);
     // A folder must not take the name of a live FILE sitting beside it either.
     // WebDAV resolves a path segment by trying findFolder() first, so a folder
@@ -229,11 +235,11 @@ router.post(
     // unreadable and undeletable there while it stays live and billed — the same
     // "live, billed, reachable from neither" state the trashed-parent gates and
     // the restore-ancestor walk exist to prevent.
-    await assertNoFileNameCollision(req.user.id, parent?.id ?? null, data.name);
+    await assertNoFileNameCollision(req.user.id, parent?.id ?? null, name);
 
     const folder = await prisma.folder.create({
       data: {
-        name: data.name,
+        name,
         parentId: parent?.id ?? null,
         ownerId: req.user.id,
         path,
@@ -285,7 +291,8 @@ router.patch(
       parentPath = p?.path ?? '/';
     }
 
-    const newName = data.name ?? cur.name;
+    // Same one-segment rule as create — a rename is the other way to forge a path.
+    const newName = data.name !== undefined ? sanitizeEntryName(data.name, { label: 'folder name' }) : cur.name;
     const newPath = joinPath(parentPath, newName);
 
     // Same rule as create, against the folder's own owner (an admin may be

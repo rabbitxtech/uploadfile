@@ -10,7 +10,7 @@ import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, forbidden, notFound } from '../utils/errors.js';
-import { findFolderNameClash } from '../utils/namecollision.js';
+import { findFolderNameClash, sanitizeEntryName, zipEntryName } from '../utils/namecollision.js';
 import { getObjectStream, putObjectStream, objectKeyFor } from '../services/storage.service.js';
 import { assertQuota, addUsage } from '../services/quota.service.js';
 import { sha256Buffer } from '../services/checksum.service.js';
@@ -242,9 +242,12 @@ router.post(
       const archive = archiver('zip', { zlib: { level: 6 } });
       archive.on('error', (e) => res.destroy(e));
       archive.pipe(res);
+      // One segment per entry — a stored name with "/" or ".." is a Zip Slip
+      // entry, and this archive goes to an anonymous link holder. See
+      // zipEntryName for why the reader sanitises as well as the writers.
       for (const f of files) {
         const s = await getObjectStream(f.objectKey);
-        archive.append(s, { name: f.name });
+        archive.append(s, { name: zipEntryName(f.name) });
       }
       await archive.finalize();
       await prisma.share.update({
@@ -302,26 +305,36 @@ router.post(
     });
     if (!folder) throw notFound('Folder');
 
+    // The multipart filename is fully attacker-controlled here — this endpoint
+    // takes no authentication at all — so reduce it to one segment before it is
+    // stored. A dropped "a/b.txt" would otherwise land a row the link owner
+    // cannot resolve over WebDAV, and "../x" would ride into their next ZIP
+    // download as a Zip Slip entry. See sanitizeEntryName.
+    const dropName = sanitizeEntryName(req.file.originalname, {
+      label: 'filename',
+      mode: 'strip',
+    });
+
     // A dropped file must not take a live SUBFOLDER's name: WebDAV resolves a
     // path segment by trying the folder first, so the upload would be live and
     // billed against the link owner while being unreadable and undeletable there.
     // The link owner is not present to resolve it, and an anonymous uploader has
     // no way to know the folder exists, so refuse rather than rename.
-    if (await findFolderNameClash(share.ownerId, folder.id, req.file.originalname)) {
+    if (await findFolderNameClash(share.ownerId, folder.id, dropName)) {
       throw conflict('A folder with that name already exists here');
     }
 
     await assertQuota(share.ownerId, req.file.size);
 
-    const ext = req.file.originalname.includes('.') ? req.file.originalname.split('.').pop() : '';
+    const ext = dropName.includes('.') ? dropName.split('.').pop() : '';
     const key = objectKeyFor(share.ownerId, ext);
     await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
     const checksum = sha256Buffer(req.file.buffer);
 
     const file = await prisma.file.create({
       data: {
-        name: req.file.originalname,
-        originalName: req.file.originalname,
+        name: dropName,
+        originalName: dropName,
         mimeType: req.file.mimetype,
         size: BigInt(req.file.size),
         objectKey: key,
@@ -350,7 +363,7 @@ router.post(
     notify(share.ownerId, {
       type: 'upload_received',
       title: `New file uploaded to "${folder.name}"`,
-      body: `"${req.file.originalname}" was uploaded via your upload link.`,
+      body: `"${dropName}" was uploaded via your upload link.`,
       link: '/files',
     });
     emitFileChange(share.ownerId, folder.id); // Task5 #5

@@ -20,7 +20,12 @@ import { env } from '../config/env.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, notFound, forbidden, HttpError } from '../utils/errors.js';
-import { findFileNameClash, findFolderNameClash } from '../utils/namecollision.js';
+import {
+  findFileNameClash,
+  findFolderNameClash,
+  sanitizeEntryName,
+  zipEntryName,
+} from '../utils/namecollision.js';
 import { makeThrottle } from '../utils/throttle.js';
 import {
   getObjectStream,
@@ -109,18 +114,27 @@ router.post(
       });
       if (!f) throw notFound('Folder');
     }
-    await assertFileNameFree(req.user.id, folderId, req.file.originalname);
+    // A multipart filename is attacker-controlled: nothing stops a client sending
+    // `filename="a/b/c.txt"`, and the name is stored verbatim and later read back
+    // as structure (WebDAV path resolution, ZIP entry names). Stripped rather
+    // than refused because the bytes are already here and clients put a path in
+    // that header routinely — see sanitizeEntryName.
+    const fileName = sanitizeEntryName(req.file.originalname, {
+      label: 'filename',
+      mode: 'strip',
+    });
+    await assertFileNameFree(req.user.id, folderId, fileName);
     await assertQuota(req.user.id, req.file.size);
 
-    const ext = req.file.originalname.includes('.') ? req.file.originalname.split('.').pop() : '';
+    const ext = fileName.includes('.') ? fileName.split('.').pop() : '';
     const key = objectKeyFor(req.user.id, ext);
     await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
     const checksum = sha256Buffer(req.file.buffer);
 
     const file = await prisma.file.create({
       data: {
-        name: req.file.originalname,
-        originalName: req.file.originalname,
+        name: fileName,
+        originalName: fileName,
         mimeType: req.file.mimetype,
         size: BigInt(req.file.size),
         objectKey: key,
@@ -343,6 +357,20 @@ function filenameFromUrl(u, contentType) {
     name = '';
   }
   name = name.split('?')[0].split('#')[0];
+  // Popping the last "/" segment is not enough on its own. A percent-encoded
+  // BACKSLASH survives decodeURIComponent and this split, so
+  // "/%2e%2e%5C%2e%2e%5Cx.txt" yielded the literal name "..\..\x.txt" — and a
+  // backslash is a separator to WebDAV clients on Windows and to the ZIP spec
+  // alike, which is exactly the forged-path shape sanitizeEntryName exists to
+  // stop. 'strip' rather than 'reject': the remote picked this string, not the
+  // user, and the useful answer is its last segment (which is what this helper
+  // has always tried to return). Falls back to a plain name when nothing usable
+  // is left, so a hostile URL can't fail an otherwise valid import.
+  try {
+    name = sanitizeEntryName(name, { mode: 'strip' });
+  } catch {
+    name = 'download';
+  }
   if (!name) name = 'download';
   if (!name.includes('.')) {
     const ext = (contentType || '').split('/')[1]?.split(';')[0]?.replace(/[^a-z0-9]/gi, '');
@@ -505,12 +533,24 @@ router.post(
     let committed = false;
     try {
       const total = dl.size;
+      // One segment, like every other path that takes a name from outside. This
+      // one is the least likely to carry a separator — the name is a single
+      // readdir entry and yt-dlp runs with --restrict-filenames — but it is the
+      // last place a foreign string still became a File.name unchecked, and
+      // 'strip' costs nothing. Falls back rather than failing: the video is
+      // already downloaded, and the response is mid-stream.
+      let videoName;
+      try {
+        videoName = sanitizeEntryName(dl.name, { label: 'filename', mode: 'strip' });
+      } catch {
+        videoName = `video.${dl.ext || 'mp4'}`;
+      }
       // The name only exists once yt-dlp has finished, so this check lands here
       // rather than up front; headers are already sent, so it is reported as an
       // error EVENT rather than thrown. Same rule as every other upload path: a
       // file must not take a live folder's name, or WebDAV shadows it.
       try {
-        await assertFileNameFree(req.user.id, folderId || null, dl.name);
+        await assertFileNameFree(req.user.id, folderId || null, videoName);
       } catch (e) {
         send({ type: 'error', error: e?.message || 'A folder with that name already exists here' });
         return res.end();
@@ -530,8 +570,8 @@ router.post(
 
       const file = await prisma.file.create({
         data: {
-          name: dl.name,
-          originalName: dl.name,
+          name: videoName,
+          originalName: videoName,
           mimeType,
           size: BigInt(total),
           objectKey: key,
@@ -832,7 +872,12 @@ router.patch(
     // refuses both (RFC 4918 replace-or-412); this is the REST way in, and it is
     // the one the rename UI actually drives.
     const targetFolderId = data.folderId !== undefined ? data.folderId ?? null : file.folderId;
-    const targetName = data.name ?? file.name;
+    // One segment only. A rename was the easiest way in: the stored name is read
+    // back as structure by WebDAV's path resolution and by the ZIP entry writer,
+    // so "sub/evil.txt" made the row unresolvable over WebDAV and
+    // "../../../tmp/x" shipped a Zip Slip entry. See sanitizeEntryName.
+    const targetName =
+      data.name !== undefined ? sanitizeEntryName(data.name, { label: 'filename' }) : file.name;
     if (targetName !== file.name || targetFolderId !== file.folderId) {
       const fileClash = await findFileNameClash(file.ownerId, targetFolderId, targetName, file.id);
       if (fileClash) throw conflict('A file with that name already exists here');
@@ -857,7 +902,7 @@ router.patch(
     const updated = await prisma.file.update({
       where: { id: file.id },
       data: {
-        name: data.name ?? undefined,
+        name: data.name !== undefined ? targetName : undefined,
         folderId: data.folderId !== undefined ? data.folderId ?? null : undefined,
         tags: tagOps,
       },
@@ -894,7 +939,15 @@ router.post(
     // else's file).
     await assertQuota(file.ownerId, req.file.size);
 
-    const ext = req.file.originalname.includes('.') ? req.file.originalname.split('.').pop() : '';
+    // Only the extension is taken from the upload here (a new version keeps the
+    // file's existing name), but the raw multipart filename can still carry a
+    // "/" — which would land inside the MinIO object key and fabricate a prefix.
+    // Reduce it to one segment first, as every other path does.
+    const versionName = sanitizeEntryName(req.file.originalname, {
+      label: 'filename',
+      mode: 'strip',
+    });
+    const ext = versionName.includes('.') ? versionName.split('.').pop() : '';
     const key = objectKeyFor(file.ownerId, ext);
     await putObjectStream(key, req.file.buffer, req.file.size, req.file.mimetype);
     // Every other write path stores the checksum on BOTH the File and its
@@ -1097,10 +1150,20 @@ router.post(
         select: { id: true, ownerId: true, folderId: true, name: true },
       });
       if (!file) continue;
-      if (r.name !== file.name) {
+      // The names come from a client-side pattern, so a "/" in one is a mistake
+      // in the pattern rather than a deliberate act — skip that entry the same
+      // way a collision is skipped, instead of failing the whole batch.
+      let newName;
+      try {
+        newName = sanitizeEntryName(r.name, { label: 'filename' });
+      } catch {
+        skipped += 1;
+        continue;
+      }
+      if (newName !== file.name) {
         const clash =
-          (await findFileNameClash(file.ownerId, file.folderId, r.name, file.id)) ||
-          (await findFolderNameClash(file.ownerId, file.folderId, r.name));
+          (await findFileNameClash(file.ownerId, file.folderId, newName, file.id)) ||
+          (await findFolderNameClash(file.ownerId, file.folderId, newName));
         if (clash) {
           skipped += 1;
           continue;
@@ -1108,7 +1171,7 @@ router.post(
       }
       const res2 = await prisma.file.updateMany({
         where: { id: file.id, trashedAt: null },
-        data: { name: r.name },
+        data: { name: newName },
       });
       count += res2.count;
     }
@@ -1211,9 +1274,15 @@ router.post(
     archive.on('error', (e) => res.destroy(e));
     archive.pipe(res);
 
+    // The entry name goes into the ZIP central directory verbatim, so a stored
+    // name containing "/" or ".." is a Zip Slip entry for whoever extracts it.
+    // The write paths now reject those, but rows created before that still
+    // carry them, so the reader sanitises too — a name is one segment here as
+    // well. `zipEntryName` never throws: a download must not 500 over one bad
+    // legacy row.
     for (const f of files) {
       const s = await getObjectStream(f.objectKey);
-      archive.append(s, { name: f.name });
+      archive.append(s, { name: zipEntryName(f.name) });
     }
     await archive.finalize();
   }),

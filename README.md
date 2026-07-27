@@ -101,6 +101,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Deleting a shared file actually cuts off the people you shared it with** — trashing already killed *public links*, and "Shared with me" already stopped listing the item, so deleting something looked like un-sharing it from both ends. The access itself outlived the listing: anyone you'd shared with who still had the id — ids travel in links and pasted URLs — could keep opening the file, downloading its bytes, and getting a direct storage URL for it, and could still read the extracted text of the whole document, while the owner watched it sit in their trash. Grants (to a person *or* a group, on the file or on a folder above it) now stop resolving the moment the item is trashed, and start working again when it's restored. You keep full access to your own trashed files, which is what the Trash screen needs
 - **A file and a folder can't occupy the same name in the same place** — nothing stopped a folder being created over a file (or a file being written over a folder), and a folder always wins when a WebDAV client resolves a path: the file underneath became unreadable *and* undeletable from any mounted drive, while staying live and counted against the quota, and a folder listing showed the one name twice. Every route that can pick a name — creating or renaming a folder, renaming or moving a file, all four upload paths, upload-request links, and the WebDAV mount's `MKCOL`/`PUT`/`MOVE` — now refuses to put the two kinds on one name. A long chunked upload is the one exception: if a folder claims the name while its parts are still uploading, the finished file is filed under a suffixed name rather than being rejected after the bytes are already stored and paid for
 - **Renaming a file onto another file's name is refused** — two files under one name in one folder left a WebDAV client picking between them by row order, with the loser billed but unreachable; the same rule the WebDAV move already followed now covers the web app's rename. Bulk rename and bulk move skip just the clashing items and report how many, so one collision can't lose a 200-file batch. Uploading two files with the same name is still allowed, as it always was — both stay visible in the file list, and the uploader offers to replace instead
+- **A name can't smuggle a path into itself** — a folder's location is stored as a path built by joining folder *names*, so a name that contained a `/` forged one. A folder called `work/reports/archive` was created at the top level yet claimed a position deep inside another tree: the genuine folder at that spot could then never be created (it collided with something that wasn't there), and deleting the unrelated `work` folder swept the forged one into the trash, where restoring couldn't bring it back. A *file* named `sub/evil.txt` was worse in a quieter way — a WebDAV client could no longer resolve it at all, so it sat live and billed but unreadable and undeletable from a mounted drive — and any name containing `../` was written straight into a ZIP download as an entry that escapes the extraction folder. Names typed by a person (creating or renaming a folder, renaming a file, starting a chunked upload) are now rejected with a clear message; a filename that merely *arrives* with an upload — a browser's multipart field, an upload-request link's submission — is reduced to its last segment instead, since the bytes are already stored and clients put paths there routinely. ZIP downloads sanitise on the way out as well, so files named before this rule existed can't ship a traversing entry either. Names the server *derives* are covered too: importing from a URL looked safe because it already takes the last path segment, but a percent-encoded backslash survives that (`%2e%2e%5C%2e%2e%5Cx.txt` was stored literally as `..\..\x.txt`), and a backslash is a separator to Windows WebDAV clients and to the ZIP format alike
 
 ### Storage / infra
 - Swappable database: switch `DB_PROVIDER` between `postgresql` / `mysql` / `sqlite` (Postgres ships as `pgvector/pgvector:pg16` for semantic search)
@@ -414,11 +415,12 @@ admin-approval gate on the WebDAV write verbs, the destination folder re-checked
 when a chunked upload completes, the read-access check a presence room owes
 before it broadcasts viewers' names and addresses, and the grant access that has
 to end when a shared file or folder is trashed (while the owner keeps theirs),
-and the one-name-one-resource rule that keeps a file and a folder off the same
-path. It is excluded from
+the one-name-one-resource rule that keeps a file and a folder off the same
+path, and the one-path-segment rule that stops a name forging a path. It is
+excluded from
 `npm test` by `vitest.config.js`, which is why the unit suite needs no database.
 
-Twenty files: `files-access.test.js`, `upload-replace.test.js`,
+Twenty-one files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `webdav-overwrite.test.js`, `webdav-move.test.js`,
 `collections.test.js`, `user-delete.test.js`, `folder-uniqueness.test.js`,
 `auth-credential.test.js`, `bulk-move.test.js`, `reindex.test.js`,
@@ -426,7 +428,7 @@ Twenty files: `files-access.test.js`, `upload-replace.test.js`,
 `file-patch-trashed.test.js`, `share-folder-trashed.test.js`,
 `folder-move-trashed-parent.test.js`, `upload-gates.test.js`,
 `presence-access.test.js`, `trashed-grant-access.test.js`,
-`name-collision.test.js`.
+`name-collision.test.js`, `name-segment.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \

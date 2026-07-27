@@ -12,7 +12,7 @@ import { prisma } from '../config/prisma.js';
 import { requireAuth, requireApproved } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { badRequest, conflict, notFound, payloadTooLarge } from '../utils/errors.js';
-import { findFolderNameClash } from '../utils/namecollision.js';
+import { findFolderNameClash, sanitizeEntryName } from '../utils/namecollision.js';
 import {
   abortMultipart,
   completeMultipart,
@@ -84,6 +84,17 @@ router.post(
       })
       .parse(req.body);
 
+    // The declared filename is stored on the session and becomes the File.name
+    // at complete(). It is one path segment — a "/" in it forges a path that
+    // WebDAV can never resolve back to the row and that rides into a ZIP entry.
+    //
+    // Refused rather than stripped, unlike the multipart paths: this is a JSON
+    // field the client composes from the browser's `File.name` (which never
+    // contains a separator), and it runs BEFORE any bytes are sent, so a client
+    // that sends one has nothing invested and can simply retry. Stripping here
+    // would also disagree with the name the client believes it is uploading.
+    const filename = sanitizeEntryName(data.filename, { label: 'filename' });
+
     if (data.folderId) {
       const f = await prisma.folder.findFirst({
         where: { id: data.folderId, ownerId: req.user.id, trashedAt: null },
@@ -95,7 +106,7 @@ router.post(
     // complete() re-checks and falls back to a suffixed name, but that exists for
     // the folder appearing mid-upload. Catching it here means the client gets a
     // clear 409 it can act on instead of a silently renamed file.
-    if (await findFolderNameClash(req.user.id, data.folderId ?? null, data.filename)) {
+    if (await findFolderNameClash(req.user.id, data.folderId ?? null, filename)) {
       throw conflict('A folder with that name already exists here');
     }
 
@@ -121,14 +132,14 @@ router.post(
 
     await assertQuota(req.user.id, netCost(data.size, refundBytes));
 
-    const ext = data.filename.includes('.') ? data.filename.split('.').pop() : '';
+    const ext = filename.includes('.') ? filename.split('.').pop() : '';
     const objectKey = objectKeyFor(req.user.id, ext);
     const uploadId = await initiateMultipart(objectKey, data.mimeType);
 
     const session = await prisma.uploadSession.create({
       data: {
         ownerId: req.user.id,
-        filename: data.filename,
+        filename,
         size: BigInt(data.size),
         mimeType: data.mimeType,
         folderId: data.folderId ?? null,
