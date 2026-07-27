@@ -6,6 +6,7 @@ import { env } from '../config/env.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../utils/async.js';
 import { assertPushEndpoint } from '../utils/ssrf.js';
+import { conflict } from '../utils/errors.js';
 
 const router = Router();
 
@@ -37,13 +38,37 @@ router.post(
       auth: sub.keys.auth,
       userAgent: (req.headers['user-agent'] || '').slice(0, 255) || null,
     };
-    // Endpoint is unique: upsert so re-subscribing (or a subscription that
-    // moved to another account on a shared device) just updates the owner/keys.
-    await prisma.pushSubscription.upsert({
-      where: { endpoint: sub.endpoint },
-      create: data,
-      update: { userId: data.userId, p256dh: data.p256dh, auth: data.auth, userAgent: data.userAgent },
+    // `endpoint` is globally unique, and the update branch used to write
+    // `userId` — so the ENDPOINT, not the account, decided who a subscription
+    // belonged to, and whichever caller presented it last won. That is a
+    // redirect of someone else's notifications: sendPush() loads every row for a
+    // user and delivers the notification's title and body verbatim, and those
+    // carry real content (the file name on a share or drop-box upload, the first
+    // 120 characters of a comment or @mention, a group name, a ban or approval).
+    // Flip the row's owner and the victim's browser silently stops receiving
+    // them while the claimant's starts, with nothing telling either side and no
+    // screen anywhere that lists who a subscription belongs to.
+    //
+    // So a row is claimed once and then belongs to that account. The ordinary
+    // re-subscribe (same user, rotated keys) still updates in place; a browser
+    // that genuinely changes hands moves over only after the previous owner
+    // releases it via POST /unsubscribe, which is already scoped to their own
+    // userId. Note the update is a conditional `updateMany` on (endpoint,
+    // userId) rather than an upsert: the endpoint's uniqueness means two callers
+    // racing here are serialised on that one row, so the loser sees 0 rows
+    // updated and gets the same 409 a plainly-taken endpoint gives.
+    const updated = await prisma.pushSubscription.updateMany({
+      where: { endpoint: sub.endpoint, userId: req.user.id },
+      data: { p256dh: data.p256dh, auth: data.auth, userAgent: data.userAgent },
     });
+    if (updated.count === 0) {
+      try {
+        await prisma.pushSubscription.create({ data });
+      } catch {
+        // Unique violation on `endpoint`: another account holds it.
+        throw conflict('That push endpoint is registered to another account');
+      }
+    }
     res.status(201).json({ ok: true });
   }),
 );

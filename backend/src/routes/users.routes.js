@@ -141,6 +141,27 @@ router.patch(
       throw badRequest('Cannot ban yourself');
     }
 
+    // ...and don't let them demote the LAST admin, for the same reason DELETE
+    // refuses to remove it: the bootstrap that grants `admin` is gated on
+    // `user.count() === 0`, so with any user still in the database it can never
+    // fire again. Losing the last admin leaves every requireRole('admin') route
+    // — user management, groups, the audit log, approving new sign-ups —
+    // permanently unreachable, with no in-app way back.
+    //
+    // The delete route was guarded and this one was not, so the exact state it
+    // refuses to create was one `{"role":"user"}` away. It is the easier way in,
+    // too: `DELETE` forbids acting on yourself at all, while this route happily
+    // let a lone admin demote THEMSELVES, and two admins could reach it by
+    // demoting each other with nothing unusual happening in between.
+    //
+    // Scoped to an actual change (`role !== u.role`), so a no-op write of
+    // `role: 'admin'` never trips it, and to the last one, so ordinary demotion
+    // among several admins keeps working.
+    if (data.role && data.role !== 'admin' && u.role === 'admin') {
+      const admins = await prisma.user.count({ where: { role: 'admin' } });
+      if (admins <= 1) throw badRequest('Cannot demote the last admin');
+    }
+
     const updated = await prisma.user.update({
       where: { id: u.id },
       data: {
