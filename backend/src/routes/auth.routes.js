@@ -11,7 +11,7 @@ import { notify } from '../services/notify.service.js';
 import { authLimiter } from '../middleware/ratelimit.js';
 import { audit, clientIp } from '../services/audit.service.js';
 import { sendPasswordReset, sendVerifyEmail } from '../services/mail.service.js';
-import { startSession, revokeUserSessions } from '../services/session.service.js';
+import { startSession, revokeUserSessions, revokeUserApiKeys } from '../services/session.service.js';
 import { findUserByCredential } from '../utils/credential.js';
 import {
   generateSetup,
@@ -344,8 +344,20 @@ router.post(
     ]);
     // Security: a reset means the account may have been compromised — drop every
     // existing login so an attacker's stolen token stops working.
+    //
+    // API keys go too. They are the OTHER bearer credential requireAuth accepts
+    // (`Bearer uk_…` / `X-API-Key`), they carry no `sid`, and they never expire —
+    // so revoking only sessions left an attacker who had reached the account long
+    // enough to call POST /api/keys with permanent, full access that outlived the
+    // very recovery meant to lock them out. Nothing in the reset flow shows the
+    // owner that a key exists, so they would have no reason to look.
     await revokeUserSessions(rec.userId);
-    audit('password_reset', { userId: rec.userId, ip: clientIp(req) });
+    const { count: keysRevoked } = await revokeUserApiKeys(rec.userId);
+    audit('password_reset', {
+      userId: rec.userId,
+      meta: { apiKeysRevoked: keysRevoked },
+      ip: clientIp(req),
+    });
     res.json({ ok: true });
   }),
 );

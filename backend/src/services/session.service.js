@@ -49,3 +49,35 @@ export function revokeUserSessions(userId, exceptId = null) {
     data: { revokedAt: new Date() },
   });
 }
+
+/**
+ * Revoke every active API key for a user.
+ *
+ * A `Session` is not the only bearer credential on this account. `requireAuth`
+ * accepts `Authorization: Bearer uk_…` / `X-API-Key: uk_…` and resolves it
+ * straight to `req.user` — no `sid`, no session row, so revoking sessions does
+ * not touch it. That makes an API key strictly MORE durable than a login: it
+ * survives "log out everywhere", a password change, and a password RESET.
+ *
+ * A password reset exists for exactly one situation — the account may be
+ * compromised — and the whole point of dropping every session there is that a
+ * stolen credential stops working. An attacker who reached the account for even
+ * a moment can mint a key from POST /api/keys, and that key then outlives the
+ * recovery: full read/write access to every file, upload, share and delete, with
+ * the legitimate owner believing they had locked the intruder out. The key is
+ * not listed anywhere the owner is prompted to look during recovery, and it
+ * never expires on its own (`ApiKey` has `revokedAt` but no `expiresAt`).
+ *
+ * So the credential-reset paths revoke both kinds. Kept as a separate function
+ * rather than folded into `revokeUserSessions` because the two are used at
+ * different bars: revoking sessions is also how "log out my other devices"
+ * works, and that must NOT destroy the user's scripts and integrations. Only a
+ * password CHANGE/RESET — where the premise is that the old credentials are no
+ * longer trusted — reaches for this one.
+ */
+export function revokeUserApiKeys(userId) {
+  return prisma.apiKey.updateMany({
+    where: { userId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+}

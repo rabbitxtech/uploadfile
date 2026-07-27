@@ -9,7 +9,7 @@ import { badRequest, notFound } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { notify } from '../services/notify.service.js';
 import { audit, clientIp } from '../services/audit.service.js';
-import { revokeUserSessions } from '../services/session.service.js';
+import { revokeUserSessions, revokeUserApiKeys } from '../services/session.service.js';
 import { removePrefix } from '../services/storage.service.js';
 import { removeHls } from '../services/hls.service.js';
 
@@ -203,8 +203,15 @@ router.patch(
       if (data.approved === false && u.approved) audit('user_unapprove', { userId: req.user.id, targetType: 'user', targetId: u.id, ip });
     }
     // An admin resetting a user's password forces that user to sign in again on
-    // all devices (Task 2).
-    if (data.password) await revokeUserSessions(u.id);
+    // all devices (Task 2), and drops their API keys for the same reason the
+    // self-serve reset does: an admin only resets someone else's password to take
+    // control back from whoever holds the current one, and a `uk_…` key carries
+    // no `sid`, so revoking sessions alone leaves that holder full access. See
+    // revokeUserApiKeys.
+    if (data.password) {
+      await revokeUserSessions(u.id);
+      await revokeUserApiKeys(u.id);
+    }
     res.json({ user: publicUser(updated) });
   }),
 );
