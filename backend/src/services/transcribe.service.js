@@ -24,8 +24,9 @@ import { pipeline } from 'node:stream/promises';
 import { env } from '../config/env.js';
 import { prisma } from '../config/prisma.js';
 import { logger } from '../config/logger.js';
-import { getObjectStream, putObjectBuffer, objectKeyFor } from './storage.service.js';
-import { addUsage } from './quota.service.js';
+import { getObjectStream, putObjectBuffer, objectKeyFor, removeObject } from './storage.service.js';
+import { reserveQuota, releaseQuota } from './quota.service.js';
+import { findFolderNameClash } from '../utils/namecollision.js';
 import { sha256Buffer } from './checksum.service.js';
 import { embed, syncVectorColumn } from './ai.service.js';
 
@@ -124,39 +125,103 @@ async function transcribe(file) {
 
 // Store the .vtt next to the media file so the player's subtitle matching
 // (same basename) finds it. Skipped if a same-named sibling already exists.
-async function createVttSibling(file, vtt) {
+//
+// Exported so the bookkeeping can be tested without driving whisper — this is a
+// real upload path (it creates a File row and charges the owner), and it owes
+// the same two rules every other one does. See the body for both.
+export async function createVttSibling(file, vtt) {
   const name = file.name.replace(/\.[^.]+$/, '') + '.vtt';
+
+  // The destination folder was live when the job started, but transcription is
+  // minutes of whisper running detached from any request — the folder can be
+  // trashed from another tab or by an admin in between. Writing the sibling
+  // into it anyway lands a LIVE file inside a trashed parent, which is the state
+  // both listings are blind to: GET /api/folders filters `trashedAt: null` and
+  // so hides the ancestor (there is no path to browse through it), while
+  // GET /api/trash wants `trashedAt: { not: null }` and so does not list the
+  // file. Live, billed, reachable from neither view, no error anywhere — the
+  // same hazard the trashed-parent gates on POST /folders, PATCH /folders/:id
+  // and the drop-box exist to prevent.
+  //
+  // Fall back to the root rather than skipping, exactly as upload/complete()
+  // does: the transcript is finished and worth keeping, and landing somewhere
+  // visible is fixable while landing nowhere is not.
+  let folderId = file.folderId ?? null;
+  if (folderId) {
+    const live = await prisma.folder.findFirst({
+      where: { id: folderId, ownerId: file.ownerId, trashedAt: null },
+      select: { id: true },
+    });
+    if (!live) folderId = null;
+  }
+
   const exists = await prisma.file.findFirst({
-    where: { ownerId: file.ownerId, folderId: file.folderId, name, trashedAt: null },
+    where: { ownerId: file.ownerId, folderId, name, trashedAt: null },
     select: { id: true },
   });
   if (exists) return;
 
+  // A file must not take a live FOLDER's name — the rule every REST upload path
+  // enforces, and this one had only the file-vs-file half of it. It matters more
+  // here than anywhere else because the name is DERIVED ("clip.mp4" →
+  // "clip.vtt"): the owner never typed it, never sees it coming, and cannot
+  // avoid the clash. A folder shadows the file outright over WebDAV — PROPFIND
+  // tries findFolder first and answers <D:collection/>, DELETE takes the folder
+  // branch — so the transcript would be live and billed while being neither
+  // readable nor deletable there, the same unreachable-row state the
+  // trashed-parent gates and the restore-ancestor walk exist to prevent.
+  //
+  // Skipped rather than suffixed: the player finds a subtitle track by exact
+  // basename, so a renamed .vtt would be a charged file that nothing ever uses.
+  // The transcript itself is already safe in ocrText, which is what search
+  // reads.
+  if (await findFolderNameClash(file.ownerId, folderId, name)) {
+    logger.warn({ fileId: file.id, name }, '[whisper] a folder holds that name — skipping .vtt sibling');
+    return;
+  }
+
   const buf = Buffer.from(vtt, 'utf8');
-  const owner = await prisma.user.findUnique({ where: { id: file.ownerId } });
-  if (!owner || BigInt(owner.usedBytes) + BigInt(buf.length) > BigInt(owner.quotaBytes)) {
+  // RESERVED, not checked-then-charged. This is a real upload path — it creates
+  // a File row and charges the owner — and it was the last one still reading
+  // `usedBytes`, deciding, and writing the increment several statements later.
+  // Transcription is serialised against itself (one whisper job at a time), so
+  // the race is not with another transcript: it is with the owner's ordinary
+  // uploads, which reserve atomically and land inside this window. See
+  // reserveQuota.
+  try {
+    await reserveQuota(file.ownerId, buf.length);
+  } catch {
     logger.warn({ fileId: file.id }, '[whisper] quota full — skipping .vtt sibling');
     return;
   }
 
   const key = objectKeyFor(file.ownerId, 'vtt');
-  await putObjectBuffer(key, buf, 'text/vtt');
   const checksum = sha256Buffer(buf);
-  await prisma.file.create({
-    data: {
-      name,
-      originalName: name,
-      mimeType: 'text/vtt',
-      size: BigInt(buf.length),
-      objectKey: key,
-      bucket: process.env.MINIO_BUCKET || 'uploads',
-      checksum,
-      folderId: file.folderId,
-      ownerId: file.ownerId,
-      versions: { create: { version: 1, objectKey: key, size: BigInt(buf.length), checksum } },
-    },
-  });
-  await addUsage(file.ownerId, buf.length);
+  try {
+    await putObjectBuffer(key, buf, 'text/vtt');
+    await prisma.file.create({
+      data: {
+        name,
+        originalName: name,
+        mimeType: 'text/vtt',
+        size: BigInt(buf.length),
+        objectKey: key,
+        bucket: process.env.MINIO_BUCKET || 'uploads',
+        checksum,
+        folderId,
+        ownerId: file.ownerId,
+        versions: { create: { version: 1, objectKey: key, size: BigInt(buf.length), checksum } },
+      },
+    });
+  } catch (e) {
+    // The reservation is already charged, so anything that stops the row being
+    // created has to give it back — this runs detached from any request, so a
+    // leak here is invisible and permanent. The object goes too: nothing will
+    // ever reference it. Same shape as the REST upload paths' catch blocks.
+    await releaseQuota(file.ownerId, buf.length).catch(() => {});
+    removeObject(key).catch(() => {});
+    logger.warn({ fileId: file.id, err: e?.message }, '[whisper] .vtt sibling failed');
+  }
 }
 
 // Serialize jobs — at most one whisper run at a time.
