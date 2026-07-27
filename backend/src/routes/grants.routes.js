@@ -160,8 +160,22 @@ router.post(
     };
 
     if (data.fileId) {
+      // A trashed file is not a share target. Trashing is this codebase's
+      // "un-share it" action and every other surface already says so: a public
+      // link 404s once its target is trashed (assertShareTargetLive),
+      // fileAccessLevel returns null for a grantee on a trashed file, and
+      // GET /shared-with-me filters trashed rows out of the listing. This route
+      // was the one place that still WROTE a grant against one.
+      //
+      // The grant is not inert while the file sits in the trash — it is a row
+      // that springs to life the moment the file is restored. Restoring is an
+      // ordinary act of housekeeping ("I deleted that by mistake"), and the owner
+      // has no reason to expect it also hands out access they never granted while
+      // the file was visible. An admin can reach any file here, so this is also
+      // the path by which a third party gains standing access to a file its owner
+      // believes they have deleted.
       const file = await prisma.file.findUnique({ where: { id: data.fileId } });
-      if (!file) throw notFound('File');
+      if (!file || file.trashedAt) throw notFound('File');
       if (file.ownerId !== req.user.id && req.user.role !== 'admin') throw forbidden();
       if (grantee && file.ownerId === grantee.id) throw badRequest('User already owns this file');
 
@@ -180,8 +194,12 @@ router.post(
       return res.status(201).json({ id: grant.id, permission: grant.permission });
     }
 
+    // Same rule on the folder side, and it reaches further: folderAccessLevel
+    // resolves a grant down the whole subtree by path prefix, so a grant written
+    // against a trashed folder becomes access to everything under it the moment
+    // the folder is restored.
     const folder = await prisma.folder.findUnique({ where: { id: data.folderId } });
-    if (!folder) throw notFound('Folder');
+    if (!folder || folder.trashedAt) throw notFound('Folder');
     if (folder.ownerId !== req.user.id && req.user.role !== 'admin') throw forbidden();
     if (grantee && folder.ownerId === grantee.id) throw badRequest('User already owns this folder');
 
