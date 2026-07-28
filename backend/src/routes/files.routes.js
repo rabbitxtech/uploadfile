@@ -1011,6 +1011,16 @@ router.post(
           checksum,
           // New content invalidates the old renditions (they'd play stale video).
           hlsReady: false,
+          // ...and the thumbnail, for exactly the same reason. It is derived
+          // from the SUPERSEDED object (thumbnail.service.js builds the key
+          // from the source key, and objectKeyFor mints a fresh UUID per
+          // write), while `GET /files/:id/thumbnail` gates on nothing but this
+          // key being set — so leaving it renders the previous version's
+          // picture as the current file's preview. A fresh one is generated
+          // below when the NEW content supports it; until then the file simply
+          // has no thumbnail, which is honest rather than wrong.
+          thumbnailKey: null,
+          hasPreview: false,
         },
         include: { versions: { orderBy: { version: 'desc' } } },
       });
@@ -1020,6 +1030,25 @@ router.post(
       throw e;
     }
     if (file.hlsReady) removeHls(file.id).catch(() => {});
+    // Nothing else references the old thumbnail once the key is cleared, and no
+    // delete path can find it afterwards — the row no longer names it.
+    if (file.thumbnailKey) removeObject(file.thumbnailKey).catch(() => {});
+    // Regenerate for the new content. This path previously generated no
+    // thumbnail at all, so a new version of an image kept the FIRST version's
+    // preview indefinitely; every other upload path does this.
+    if (canThumbnail(req.file.mimetype)) {
+      generateThumbnail(key, req.file.mimetype)
+        .then((thumbKey) => {
+          if (thumbKey)
+            return prisma.file.update({
+              where: { id: file.id },
+              data: { thumbnailKey: thumbKey, hasPreview: true },
+            });
+        })
+        .catch((e) => console.warn('[thumb] failed:', e?.message));
+    } else if (canVideoThumbnail(req.file.mimetype)) {
+      makeVideoThumb(file.id, key, req.file.mimetype);
+    }
     postProcessMedia(file.id, req.file.mimetype);
     res.status(201).json(updated);
   }),

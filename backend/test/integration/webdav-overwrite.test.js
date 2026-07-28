@@ -201,4 +201,66 @@ describe('WebDAV PUT overwrite', () => {
     expect(file.versions[0].size).toBe(700n);
     expect(file.versions[0].objectKey).toBe(file.objectKey);
   });
+
+  // The thumbnail is derived from the file's CONTENT, so an overwrite invalidates
+  // it exactly as it invalidates the HLS renditions. `GET /files/:id/thumbnail`
+  // gates on nothing but `File.thumbnailKey` — the same shape as the HLS route
+  // gating on nothing but `hlsReady` — so a key left pointing at the previous
+  // object doesn't merely strand it: the route keeps serving the OLD file's
+  // picture as the preview of the new one. This route never generates a
+  // thumbnail, so nothing ever overwrites a stale key; it persists forever.
+  it('clears the thumbnail of the file it overwrites', async () => {
+    const user = await makeUser();
+    const { file } = await makeVersionedFile(user, { name: 'photo.png', sizes: [1000] });
+    const thumbKey = file.objectKey.replace(/^u\//, 't/') + '.webp';
+    await prisma.file.update({
+      where: { id: file.id },
+      data: { thumbnailKey: thumbKey, hasPreview: true },
+    });
+
+    const res = await request(app)
+      .put('/webdav/photo.png')
+      .set('Authorization', basic(user))
+      .set('Content-Type', 'image/png')
+      .send(Buffer.alloc(500, 'x'));
+    expect(res.status).toBe(204);
+
+    // The preview of the previous content must not survive the overwrite.
+    const after = await prisma.file.findUnique({ where: { id: file.id } });
+    expect(after.thumbnailKey).toBeNull();
+    expect(after.hasPreview).toBe(false);
+  });
+
+  it('removes the overwritten file thumbnail object', async () => {
+    const user = await makeUser();
+    const { file } = await makeVersionedFile(user, { name: 'pic.png', sizes: [1000] });
+    const thumbKey = file.objectKey.replace(/^u\//, 't/') + '.webp';
+    await prisma.file.update({ where: { id: file.id }, data: { thumbnailKey: thumbKey } });
+
+    const res = await request(app)
+      .put('/webdav/pic.png')
+      .set('Authorization', basic(user))
+      .set('Content-Type', 'image/png')
+      .send(Buffer.alloc(500, 'x'));
+    expect(res.status).toBe(204);
+
+    // Derived data outside the quota, but still an object nothing will ever
+    // reference again — the replace-on-duplicate path deletes it for this reason.
+    expect(removed).toContain(thumbKey);
+  });
+
+  it('leaves a file with no thumbnail alone', async () => {
+    const user = await makeUser();
+    const { file } = await makeVersionedFile(user, { name: 'plain.txt', sizes: [1000] });
+
+    const res = await request(app)
+      .put('/webdav/plain.txt')
+      .set('Authorization', basic(user))
+      .set('Content-Type', 'text/plain')
+      .send(Buffer.alloc(500, 'x'));
+    expect(res.status).toBe(204);
+
+    const after = await prisma.file.findUnique({ where: { id: file.id } });
+    expect(after.thumbnailKey).toBeNull();
+  });
 });

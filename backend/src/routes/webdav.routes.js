@@ -312,6 +312,12 @@ router.put('*', async (req, res) => {
       .filter((v) => v.version !== existing.currentVersion)
       .map((v) => v.objectKey);
     staleKeys.push(existing.objectKey);
+    // The thumbnail is derived from the file's CONTENT, so an overwrite
+    // invalidates it exactly as it invalidates the HLS renditions below. It is
+    // derived data outside the quota, but it is still an object nothing will
+    // ever reference again once the key is cleared — the replace-on-duplicate
+    // path in upload.routes.js drops it for the same reason.
+    if (existing.thumbnailKey) staleKeys.push(existing.thumbnailKey);
 
     await prisma.$transaction([
       prisma.file.update({
@@ -328,6 +334,14 @@ router.put('*', async (req, res) => {
           // the player would keep serving the PREVIOUS file's video under the
           // new one, with no error anywhere.
           hlsReady: false,
+          // The thumbnail has exactly that shape: `GET /files/:id/thumbnail`
+          // gates on nothing but this key, and it is derived from the OLD
+          // object key (thumbnail.service.js builds it from the source key),
+          // so leaving it set serves the previous file's picture as the new
+          // one's preview. This route never generates a thumbnail, so nothing
+          // would ever overwrite a stale key — it has to be cleared here.
+          thumbnailKey: null,
+          hasPreview: false,
         },
       }),
       prisma.fileVersion.updateMany({

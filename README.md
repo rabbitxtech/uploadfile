@@ -94,6 +94,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Empty files upload like any other** — object storage can't hold a zero-byte *part*, so a 0-byte file is sent as no parts at all and the empty object is written directly; every file goes through the chunked path, so treating "no parts" as an error made empty files impossible to upload rather than merely unusual
 - **A new version updates the file's fingerprint** — uploading a version rewrites the checksum on both the file and the version row, so the duplicate finder groups by what a file *currently* holds, and the collaborative editor's "unchanged, skip the save" check can't mistake fresh content for content it already saved and drop your next edit
 - **Overwriting a video drops its old renditions** — adaptive-streaming segments are keyed by file id, so an overwrite that left them in place would keep playing the *previous* video under the new file's name; every path that replaces content (new version, replace-on-duplicate, WebDAV overwrite, delete) clears them
+- **Replacing a file replaces its thumbnail** — the little preview image is generated from a file's contents, so it goes stale the moment the contents change. Two paths changed a file in place and left the old one pointing at the previous content: uploading a new version, and overwriting through the WebDAV mount. The thumbnail endpoint serves whatever key the file record holds, so the picture you saw in the file list and the preview pane was the *old* version's — a photo replaced with a different photo kept showing the one it replaced, and neither path ever generated a fresh thumbnail, so nothing would have corrected it later. Both now clear the stale preview and delete the image behind it, and a new version generates its own thumbnail like every other upload does
 - **Trash auto-clean won't take a folder you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
 - **Restoring a folder rescues its contents too, not just the folder** — "restore" deliberately clears only the flag on what you selected: restoring a folder brings the folder back but leaves the files inside still marked deleted, because a folder you restore may well be one you want only part of back. That left those files in a state nothing accounted for — the folder was live and listed again, you'd open it and find it empty, and reasonably assume the contents were still on their way. Thirty days after the *original* delete, the auto-clean would then destroy them, files and stored bytes both, out of a folder sitting in plain view; emptying the trash by hand did the same thing immediately. Both now leave a deleted file alone while the folder holding it is live, and only count the bytes they actually reclaimed. Deleting one named file from the trash still works exactly as asked
 - **A file you rescued keeps the folder it lives in** — the two rules above work together, and between them was a gap. Restoring one file out of a still-deleted folder is a single click (the Trash screen lists deleted files and deleted folders in separate tables), and both cleanup paths correctly leave that file alone afterwards. But the *folder* around it was still deleted on schedule, and a folder's removal doesn't delete the files inside it — it silently moves them to the top level. So the file you deliberately rescued survived, and then turned up somewhere you never put it, with nothing to say which folder it came from or that the folder had ever existed. Both the auto-clean and "empty trash" now keep any deleted folder that still holds a file they aren't removing — along with the folders above it — and let it go on a later pass once it's genuinely empty
@@ -456,11 +457,12 @@ account and can't be claimed out from under it, the three rules the whisper
 transcript's subtitle sibling owes as the upload path it really is, the
 refusal to let a password-reset link outlive the password it overrides, and the
 folder a bulk purge must keep because it still holds a file that purge is not
-removing. It is
+removing, and the thumbnail a new version (or a WebDAV overwrite) must not leave
+pointing at the content it replaced. It is
 excluded from `npm test` by `vitest.config.js`, which is why the unit suite needs
 no database.
 
-Thirty-eight files: `files-access.test.js`, `upload-replace.test.js`,
+Thirty-nine files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `retention-restored-file.test.js`,
 `trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
 `webdav-overwrite.test.js`, `webdav-move.test.js`,
@@ -477,7 +479,8 @@ Thirty-eight files: `files-access.test.js`, `upload-replace.test.js`,
 `trash-restore-collision.test.js`, `reset-token-reuse.test.js`,
 `share-cap-race.test.js`, `last-admin-role.test.js`,
 `push-subscribe-owner.test.js`, `transcribe-vtt-sibling.test.js`,
-`reset-token-lifetime.test.js`, `folder-purge-live-file.test.js`.
+`reset-token-lifetime.test.js`, `folder-purge-live-file.test.js`,
+`version-thumbnail.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
