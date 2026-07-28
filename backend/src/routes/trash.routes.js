@@ -318,7 +318,30 @@ router.post(
         select: { ownerId: true, path: true },
       }),
     ]);
-    const deletableFolders = deletableFolderIds(trashedFolders, survivors);
+    // A folder holding a file this request is NOT deleting must survive too.
+    // `File.folder` is SetNull, so the cascade would not delete that file — it
+    // would silently relocate it to the root. That is the same file the filter
+    // above deliberately held back (one restored out of a still-trashed folder),
+    // so destroying the folder around it would undo the point of holding it
+    // back: the user rescued the file to keep it where it was.
+    //
+    // "Not deleting" is broader than "held back": a file that was never trashed
+    // is not in `files` either, and orphaning that one is just as wrong.
+    const deletingIds = new Set(files.map((f) => f.id));
+    const liveFileFolderIds = new Set(
+      trashedFolders.length
+        ? (
+            await prisma.file.findMany({
+              where: { folderId: { in: trashedFolders.map((f) => f.id) } },
+              select: { id: true, folderId: true },
+            })
+          )
+            .filter((f) => !deletingIds.has(f.id))
+            .map((f) => f.folderId)
+        : [],
+    );
+
+    const deletableFolders = deletableFolderIds(trashedFolders, survivors, liveFileFolderIds);
 
     // Delete exactly the files whose bytes were counted above. A blanket
     // `deleteMany({ trashedAt: { not: null } })` would ignore the filter and

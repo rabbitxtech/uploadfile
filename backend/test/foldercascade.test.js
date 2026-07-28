@@ -61,4 +61,37 @@ describe('deletableFolderIds', () => {
   it('returns nothing for no candidates', () => {
     expect(deletableFolderIds([], [s('/docs')])).toEqual([]);
   });
+
+  // A surviving FILE is the other half of the same rule. File.folder is SetNull,
+  // so the cascade does not delete a live file under a purged folder — it
+  // silently relocates it to the root, which is the outcome this module exists
+  // to prevent, reached from the file side instead of the folder side.
+  describe('a folder holding a live file', () => {
+    it('skips a candidate that still holds a live file', () => {
+      const out = deletableFolderIds([f('a', '/docs')], [], new Set(['a']));
+      expect(out).toEqual([]);
+    });
+
+    it('skips the ANCESTORS of such a folder too', () => {
+      // Only "b" holds the file, but deleting "a" cascades into it.
+      const candidates = [f('a', '/docs'), f('b', '/docs/2025')];
+      expect(deletableFolderIds(candidates, [], new Set(['b']))).toEqual([]);
+    });
+
+    it('still deletes unrelated siblings', () => {
+      const candidates = [f('a', '/docs'), f('b', '/photos')];
+      expect(deletableFolderIds(candidates, [], new Set(['a']))).toEqual(['b']);
+    });
+
+    it('defaults to the old behaviour when no set is passed', () => {
+      expect(deletableFolderIds([f('a', '/docs')], [])).toEqual(['a']);
+    });
+
+    it('matches by folder id, so another owner\'s same-named folder is unaffected', () => {
+      // The set holds IDs, which are unique — unlike `path`, which is names-only
+      // and not namespaced per owner.
+      const candidates = [f('a', '/docs'), f('z', '/docs', 'someone-else')];
+      expect(deletableFolderIds(candidates, [], new Set(['a']))).toEqual(['z']);
+    });
+  });
 });

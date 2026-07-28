@@ -96,6 +96,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **Overwriting a video drops its old renditions** — adaptive-streaming segments are keyed by file id, so an overwrite that left them in place would keep playing the *previous* video under the new file's name; every path that replaces content (new version, replace-on-duplicate, WebDAV overwrite, delete) clears them
 - **Trash auto-clean won't take a folder you rescued** — restoring a folder out of a long-trashed parent keeps it, even though deleting the parent would otherwise cascade it away; the parent waits for a later sweep
 - **Restoring a folder rescues its contents too, not just the folder** — "restore" deliberately clears only the flag on what you selected: restoring a folder brings the folder back but leaves the files inside still marked deleted, because a folder you restore may well be one you want only part of back. That left those files in a state nothing accounted for — the folder was live and listed again, you'd open it and find it empty, and reasonably assume the contents were still on their way. Thirty days after the *original* delete, the auto-clean would then destroy them, files and stored bytes both, out of a folder sitting in plain view; emptying the trash by hand did the same thing immediately. Both now leave a deleted file alone while the folder holding it is live, and only count the bytes they actually reclaimed. Deleting one named file from the trash still works exactly as asked
+- **A file you rescued keeps the folder it lives in** — the two rules above work together, and between them was a gap. Restoring one file out of a still-deleted folder is a single click (the Trash screen lists deleted files and deleted folders in separate tables), and both cleanup paths correctly leave that file alone afterwards. But the *folder* around it was still deleted on schedule, and a folder's removal doesn't delete the files inside it — it silently moves them to the top level. So the file you deliberately rescued survived, and then turned up somewhere you never put it, with nothing to say which folder it came from or that the folder had ever existed. Both the auto-clean and "empty trash" now keep any deleted folder that still holds a file they aren't removing — along with the folders above it — and let it go on a later pass once it's genuinely empty
 - **Video seeking serves the bytes it claims** — `Range` requests (including the `bytes=-500` suffix form) are parsed against the real object size, so a seek can't be answered with the wrong region under a correct-looking header
 - **A file's older versions are billed and reclaimed as one** — every version keeps its own stored copy, so deleting or overwriting a file refunds and removes *all* of them; a WebDAV overwrite collapses the history rather than leaving earlier versions charged for storage nothing points at
 - **Optimising a video keeps the books straight** — the "make this video start faster" pass rewrites the stored file (same content, smaller container) and then has to correct the space it takes up. It did that by adjusting the account total directly, without the floor that keeps the figure from going below zero — and a negative total makes every later size check pass, quietly turning the quota off for that account with no way to notice or undo it. It also updated the file's own size but not its version record, and deleting a file refunds what the *version records* say, so every optimised video left the total permanently wrong once it was eventually deleted. Both halves now go through the same accounting the rest of the app uses
@@ -308,8 +309,10 @@ backend/                Express + Prisma + MinIO SDK
                         vector (pgvector helpers), range (HTTP Range parsing),
                         mentions (@mention parsing + lookup),
                         foldercascade (which folders a bulk delete may safely
-                        remove — Folder.parent cascades, so this is shared by
-                        the retention sweep and "empty trash")
+                        remove — Folder.parent cascades and File.folder is
+                        SetNull, so a folder is kept if it still has a live
+                        descendant OR still holds a file the delete is keeping;
+                        shared by the retention sweep and "empty trash")
   Dockerfile            Debian base; installs tesseract/poppler/ffmpeg/yt-dlp,
                         compiles whisper-cli; migrate + serve
 
@@ -450,12 +453,14 @@ concurrency, the per-link download and upload caps a public share link owes when
 it is opened by several people at once, the refusal to demote the last
 administrator, the rule that a push-notification registration belongs to one
 account and can't be claimed out from under it, the three rules the whisper
-transcript's subtitle sibling owes as the upload path it really is, and the
-refusal to let a password-reset link outlive the password it overrides. It is
+transcript's subtitle sibling owes as the upload path it really is, the
+refusal to let a password-reset link outlive the password it overrides, and the
+folder a bulk purge must keep because it still holds a file that purge is not
+removing. It is
 excluded from `npm test` by `vitest.config.js`, which is why the unit suite needs
 no database.
 
-Thirty-seven files: `files-access.test.js`, `upload-replace.test.js`,
+Thirty-eight files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `retention-restored-file.test.js`,
 `trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
 `webdav-overwrite.test.js`, `webdav-move.test.js`,
@@ -472,7 +477,7 @@ Thirty-seven files: `files-access.test.js`, `upload-replace.test.js`,
 `trash-restore-collision.test.js`, `reset-token-reuse.test.js`,
 `share-cap-race.test.js`, `last-admin-role.test.js`,
 `push-subscribe-owner.test.js`, `transcribe-vtt-sibling.test.js`,
-`reset-token-lifetime.test.js`.
+`reset-token-lifetime.test.js`, `folder-purge-live-file.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \

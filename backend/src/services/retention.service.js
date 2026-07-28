@@ -91,7 +91,29 @@ export async function purgeExpiredTrash() {
       })
     : [];
 
-  const deletable = deletableFolderIds(expired, survivors);
+  // A folder that still holds a file the sweep is NOT deleting must survive too.
+  // `File.folder` is SetNull, so the cascade would not delete that file — it
+  // would silently move it to the root, which is the outcome the guard exists to
+  // prevent, arrived at from the file side instead of the folder side. This is
+  // the same file the filter above deliberately held back (a file restored out
+  // of a still-trashed folder), so keeping it and then destroying the folder
+  // around it would undo the point of holding it back.
+  const liveFileFolderIds = new Set(
+    expired.length
+      ? (
+          await prisma.file.findMany({
+            where: {
+              folderId: { in: expired.map((f) => f.id) },
+              OR: [{ trashedAt: null }, { trashedAt: { gte: cutoff } }],
+            },
+            select: { folderId: true },
+            distinct: ['folderId'],
+          })
+        ).map((f) => f.folderId)
+      : [],
+  );
+
+  const deletable = deletableFolderIds(expired, survivors, liveFileFolderIds);
 
   const folders = deletable.length
     ? await prisma.folder.deleteMany({ where: { id: { in: deletable } } })
