@@ -9,7 +9,11 @@ import { badRequest, notFound } from '../utils/errors.js';
 import { env } from '../config/env.js';
 import { notify } from '../services/notify.service.js';
 import { audit, clientIp } from '../services/audit.service.js';
-import { revokeUserSessions, revokeUserApiKeys } from '../services/session.service.js';
+import {
+  revokeUserSessions,
+  revokeUserApiKeys,
+  invalidateTokens,
+} from '../services/session.service.js';
 import { removePrefix } from '../services/storage.service.js';
 import { removeHls } from '../services/hls.service.js';
 
@@ -54,6 +58,16 @@ router.patch(
     // here (Task 2).
     if (data.password) {
       await revokeUserSessions(req.user.id, req.sessionId);
+      // A live password-RESET link survives the password change it competes
+      // with, and it is the one credential that overrides a password. Someone
+      // who saw the emailed link once keeps the ability to take the account
+      // back, and changing the password — the owner's natural reaction, and the
+      // very act that revokes every other session here — did nothing about it.
+      // API keys are deliberately NOT revoked on this route (routine rotation
+      // must not destroy the user's scripts), but a reset link is not a
+      // long-lived integration credential: it exists for minutes and only to
+      // override the password being set right now. See invalidateTokens.
+      await invalidateTokens(req.user.id, 'reset');
       audit('password_change', { userId: req.user.id, ip: clientIp(req) });
     }
     res.json({ user: publicUser(u) });
@@ -232,6 +246,11 @@ router.patch(
     if (data.password) {
       await revokeUserSessions(u.id);
       await revokeUserApiKeys(u.id);
+      // An admin resets someone's password to take control back from whoever
+      // holds the current one. A reset link already sitting in that person's
+      // hands would hand it straight back, so it goes with the sessions and the
+      // keys.
+      await invalidateTokens(u.id, 'reset');
     }
     res.json({ user: publicUser(updated) });
   }),

@@ -11,7 +11,12 @@ import { notify } from '../services/notify.service.js';
 import { authLimiter } from '../middleware/ratelimit.js';
 import { audit, clientIp } from '../services/audit.service.js';
 import { sendPasswordReset, sendVerifyEmail } from '../services/mail.service.js';
-import { startSession, revokeUserSessions, revokeUserApiKeys } from '../services/session.service.js';
+import {
+  startSession,
+  revokeUserSessions,
+  revokeUserApiKeys,
+  invalidateTokens,
+} from '../services/session.service.js';
 import { findUserByCredential } from '../utils/credential.js';
 import {
   generateSetup,
@@ -165,6 +170,10 @@ router.post(
  * `upload/complete`, for the same reason.
  *
  * Returns the claimed row, or null if another caller got there first.
+ *
+ * This makes ONE link single-use. It says nothing about how many links exist —
+ * that is `invalidateTokens` in session.service.js, which the callers below use
+ * to spend the siblings a repeated "email me the link" left lying around.
  */
 async function claimToken(rawToken, type) {
   const hash = sha256(rawToken);
@@ -177,6 +186,7 @@ async function claimToken(rawToken, type) {
   });
   return claimed.count === 1 ? rec : null;
 }
+
 
 // Confirm an email with the token from the verification link. On success the
 // account is activated and the user is signed in (token returned).
@@ -191,6 +201,11 @@ router.post(
       where: { id: rec.userId },
       data: { emailVerified: true },
     });
+    // The other verification links for this address are spent too — the address
+    // is proven now, so a second link proves nothing and is just a live token
+    // sitting in an inbox. `resend-verification` is the ordinary way to hold
+    // several at once.
+    await invalidateTokens(user.id, 'verify', rec.id);
     audit('email_verified', { userId: user.id, ip: clientIp(req) });
     notify(user.id, {
       type: 'welcome',
@@ -393,9 +408,15 @@ router.post(
     // owner that a key exists, so they would have no reason to look.
     await revokeUserSessions(rec.userId);
     const { count: keysRevoked } = await revokeUserApiKeys(rec.userId);
+    // ...and so do the OTHER live reset links. Requesting the mail twice because
+    // the first was slow is ordinary, and it left every earlier link able to
+    // reset the account again for the rest of its hour — a second override of
+    // the password that this route has just deliberately changed. See
+    // invalidateTokens.
+    const { count: linksKilled } = await invalidateTokens(rec.userId, 'reset', rec.id);
     audit('password_reset', {
       userId: rec.userId,
-      meta: { apiKeysRevoked: keysRevoked },
+      meta: { apiKeysRevoked: keysRevoked, resetLinksInvalidated: linksKilled },
       ip: clientIp(req),
     });
     res.json({ ok: true });

@@ -81,3 +81,44 @@ export function revokeUserApiKeys(userId) {
     data: { revokedAt: new Date() },
   });
 }
+
+/**
+ * Spend every OTHER live `Token` of one kind for a user.
+ *
+ * The third bearer credential on an account, and the only one that OVERRIDES a
+ * password. `claimToken` in auth.routes.js makes one link single-use; it says
+ * nothing about how many links exist, and each `forgot-password` /
+ * `resend-verification` mints a fresh row while leaving the previous ones
+ * `usedAt: null` for the rest of their TTL. So the flow was single-use per
+ * link but multi-use per REQUEST:
+ *
+ *   - Ask for the reset mail twice because the first was slow, use the second,
+ *     and the first still resets the account for the remainder of its hour.
+ *   - Worse, a live reset link OUTLIVED the password change it was competing
+ *     with. Someone who saw that link once — a shared inbox, a forwarded mail,
+ *     a device briefly not theirs — keeps the ability to take the account over,
+ *     and the owner's natural reaction (setting a new password) did nothing
+ *     about it. That is the same premise `revokeUserSessions` and
+ *     `revokeUserApiKeys` act on here: after a credential reset, the older ways
+ *     in stop working. Leaving alive the one credential that outranks the
+ *     password was the gap.
+ *
+ * A `reset` link is therefore killed by anything that re-establishes the
+ * password: another reset completing, the user changing it, an admin resetting
+ * it. A `verify` link is killed once the address it proves is verified.
+ *
+ * Lives here rather than in auth.routes.js so users.routes.js can reach it
+ * without importing one route module from another. `exceptId` keeps the row the
+ * caller just claimed intact, so the trail still shows which link was used.
+ */
+export function invalidateTokens(userId, type, exceptId = null) {
+  return prisma.token.updateMany({
+    where: {
+      userId,
+      type,
+      usedAt: null,
+      ...(exceptId ? { id: { not: exceptId } } : {}),
+    },
+    data: { usedAt: new Date() },
+  });
+}

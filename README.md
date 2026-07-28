@@ -10,7 +10,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - Username **or** email login (regular usernames must be `letters/digits/. _ -`) — both go in the request's `email` field, which accepts either
 - JWT auth with `admin` / `user` roles, per-user quota
 - **Two-factor authentication (TOTP)** — scan a QR with any authenticator app; login becomes password + 6-digit code, with 8 single-use recovery codes (shown once, stored hashed). Disabling 2FA requires password **and** a valid code.
-- **Session management** — every login is a revocable session; a "Active sessions" panel lists your devices (browser/OS, IP, last active) and lets you sign out one or all others. Changing your password signs out every other device; a reset signs out all.
+- **Session management** — every login is a revocable session; a "Active sessions" panel lists your devices (browser/OS, IP, last active) and lets you sign out one or all others. Changing your password signs out every other device; a reset signs out all. Either one also retires any password-reset link still outstanding for the account.
 - **API keys** (`uk_` prefix, hashed) for programmatic / WebDAV access
 - **Password reset** by email (forgot-password → tokened reset link); confirm-password on register & password change
 - Admin can create users, change roles, change quotas, reset passwords, ban/unban, delete
@@ -83,6 +83,7 @@ Full-stack file storage app: **React** (frontend) + **Node.js/Express** (backend
 - **A password-reset link works exactly once** — the "already used" stamp is the whole of what stops a reset link being replayed, and it was read and then written as two separate steps, with the slow work of hashing the new password sitting between them. Anything arriving in that window passed the same "not used yet" check: measured against a real server, five resets submitted together on one link were **all accepted**, and whichever finished last silently decided the account's password while the other four were each told their reset had succeeded — so the person who ends up holding the account isn't necessarily the one who asked for the reset. The verification link had the same shape, handing out a working login per attempt from a single email. Both are now claimed in one conditional step, so one caller wins and the rest get the same "invalid or expired" answer a genuinely spent link gives
 - **Collections can't be used to read someone else's files** — a collection is yours, but its contents are a join table, so adding a file checks that *you own it*; you can't name a stranger's file id and have the listing hand back its contents (including extracted OCR text)
 - **Resetting a password cuts off API keys too, not just logins** — a password reset exists for one situation: the account may be in someone else's hands, and everything they hold has to stop working. It dropped every login session, but an API key is a *second* kind of credential — it's presented as a header, carries no session, and has no expiry of its own — so nothing in the session machinery touched it. That made a key strictly harder to revoke than a password: someone who reached the account for even a moment could mint one, and it kept full read/write access to every file after the owner had recovered the account and been told they were safe. Nothing in the recovery flow so much as mentions that a key exists, so there was no prompt to go looking. Both credential resets — recovering your own account, and an admin setting someone's password to take control back — now revoke the account's keys as well, leaving them listed as revoked so the owner can *see* what was cut off. Routinely changing your own password deliberately doesn't: that's hygiene, not recovery, and it shouldn't break your scripts and integrations
+- **A reset link doesn't outlive the password it overrides** — a reset link is single-use, but nothing ever retired the *other* links: every "email me a reset link" issued a fresh one and left the earlier ones working for the rest of their hour. So the flow was single-use per link and multi-use per request, and it broke in two directions. Asking twice because the first mail was slow left the unused link able to reset the account again after the second had already been used. Worse, a live link **survived the password change it was competing with**: changing your password already signs out every other device on the premise that older credentials are no longer trusted, and an admin resetting someone's password additionally drops their API keys on the premise that it's taking control back — yet the one credential that *outranks* a password was left alive through both. Someone who saw the emailed link once — a shared inbox, a forwarded message, a device that was briefly not yours — kept the ability to take the account over, and the owner's natural reaction of setting a new password did nothing about it. A reset link is now spent by anything that re-establishes the password: another reset completing, you changing it, or an admin resetting it. Verification links are likewise spent once the address they prove is confirmed
 - **The last administrator can't be demoted** — deleting a user already refused to remove the last admin, because the consequence can't be undone from inside the app: the rule that grants the first account admin rights only fires on a completely empty database, so once the last one is gone, every administrative screen — user management, approving new sign-ups, groups, the audit log — is locked for good and the only way back is editing the database by hand. Changing someone's *role* had no such check, so the exact state the delete refuses to create was one role change away, and reachable by accident rather than by attack: a lone admin tidying up their own account could demote themselves (something delete explicitly forbids), or two admins could demote each other with nothing unusual happening in between. Demoting an admin while another remains still works exactly as before
 - **A push-notification registration belongs to one account** — browsers register for push under an endpoint that's unique across the whole system, and re-registering used to overwrite whoever the endpoint was recorded against, so the endpoint rather than the account decided who owned it and the last person to present it won. Since notifications are delivered with their real text, taking over someone's registration quietly redirected their alerts — the name of a file just shared with them or dropped in their upload folder, the first line of a comment or a mention, a group name, whether their account was approved or banned — to another person's browser, while theirs simply went quiet. Neither side is told, and nothing in the app lists who a registration belongs to. A registration is now claimed once: your own browser refreshing its keys still works, and a device that genuinely changes hands moves over only after the previous owner unsubscribes
 - Refuses to start in prod without a strong `JWT_SECRET`, `POSTGRES_PASSWORD` or MinIO credentials; datastore ports are closed in prod; redacted structured logs
@@ -447,11 +448,14 @@ trash owes just as every other name-choosing path does, and the single-use
 guarantee a password-reset (and email-verification) link owes under
 concurrency, the per-link download and upload caps a public share link owes when
 it is opened by several people at once, the refusal to demote the last
-administrator, and the rule that a push-notification registration belongs to one
-account and can't be claimed out from under it. It is excluded from
-`npm test` by `vitest.config.js`, which is why the unit suite needs no database.
+administrator, the rule that a push-notification registration belongs to one
+account and can't be claimed out from under it, the three rules the whisper
+transcript's subtitle sibling owes as the upload path it really is, and the
+refusal to let a password-reset link outlive the password it overrides. It is
+excluded from `npm test` by `vitest.config.js`, which is why the unit suite needs
+no database.
 
-Thirty-five files: `files-access.test.js`, `upload-replace.test.js`,
+Thirty-seven files: `files-access.test.js`, `upload-replace.test.js`,
 `retention.test.js`, `retention-restored-file.test.js`,
 `trash-empty-restored-file.test.js`, `recovery-code-reuse.test.js`,
 `webdav-overwrite.test.js`, `webdav-move.test.js`,
@@ -467,7 +471,8 @@ Thirty-five files: `files-access.test.js`, `upload-replace.test.js`,
 `upload-complete-race.test.js`, `webdav-name-segment.test.js`,
 `trash-restore-collision.test.js`, `reset-token-reuse.test.js`,
 `share-cap-race.test.js`, `last-admin-role.test.js`,
-`push-subscribe-owner.test.js`.
+`push-subscribe-owner.test.js`, `transcribe-vtt-sibling.test.js`,
+`reset-token-lifetime.test.js`.
 
 ```bash
 docker run --rm -d -p 55432:5432 -e POSTGRES_PASSWORD=test -e POSTGRES_USER=test \
